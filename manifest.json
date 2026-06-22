@@ -1,7 +1,7 @@
 {
   "id": "docli-connect",
   "name": "Docli Connect",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "minAppVersion": "1.12.3",
   "description": "Sync your vault with a docli.ru workspace.",
   "author": "docli.ru",

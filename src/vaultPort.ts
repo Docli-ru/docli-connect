@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { normalizePath, TFile, TFolder, type App, type TAbstractFile } from "obsidian";
+import { normalizePath, TFile, TFolder, type App } from "obsidian";
 import { hasReservedSegment, type Kind, type VaultEntry, type VaultPort } from "@docli/sync-client";
 
 export function classifyFile(file: TFile): Kind {
@@ -62,14 +62,14 @@ export class ObsidianVaultPort implements VaultPort {
     try {
       await this.app.vault.createFolder(p);
     } catch {
-
+       /* noop */
     }
   }
 
   async remove(path: string): Promise<void> {
     const f = this.app.vault.getAbstractFileByPath(normalizePath(path));
     if (!f) return;
-    await this.app.fileManager.trashFile(f as TAbstractFile);
+    await this.app.fileManager.trashFile(f);
   }
 
   async move(from: string, to: string): Promise<void> {
@@ -77,7 +77,7 @@ export class ObsidianVaultPort implements VaultPort {
     if (!src) return;
     const dest = normalizePath(to);
     await this.ensureParent(dest);
-    await this.app.vault.rename(src as TAbstractFile, dest);
+    await this.app.vault.rename(src, dest);
   }
 
   private async ensureParent(path: string): Promise<void> {
@@ -91,7 +91,7 @@ export class ObsidianVaultPort implements VaultPort {
         try {
           await this.app.vault.createFolder(acc);
         } catch {
-
+           /* noop */
         }
       }
     }

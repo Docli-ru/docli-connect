@@ -25,7 +25,7 @@ export class WebSocketNotifyPort implements NotifyPort {
 
     const scheduleReconnect = () => {
       if (closed || reconnectTimer !== null) return;
-      reconnectTimer = setTimeout(() => {
+      reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         open();
       }, backoff);
@@ -73,7 +73,7 @@ export class WebSocketNotifyPort implements NotifyPort {
         try {
           sock.close();
         } catch {
-
+           /* noop */
         }
       };
       sock.onclose = () => {
@@ -87,7 +87,7 @@ export class WebSocketNotifyPort implements NotifyPort {
 
     return () => {
       closed = true;
-      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       if (ws) {
 
         ws.onclose = null;
@@ -97,7 +97,7 @@ export class WebSocketNotifyPort implements NotifyPort {
         try {
           ws.close();
         } catch {
-
+           /* noop */
         }
         ws = null;
       }

@@ -25,7 +25,7 @@ export class IndexedDbKv implements KvStore {
         if (!req.result.objectStoreNames.contains(STORE)) req.result.createObjectStore(STORE);
       };
       req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => reject(req.error ?? new Error("IndexedDB request failed"));
     });
     return this.dbp;
   }
@@ -36,7 +36,7 @@ export class IndexedDbKv implements KvStore {
       const tx = db.transaction(STORE, "readonly");
       const req = tx.objectStore(STORE).get(key);
       req.onsuccess = () => resolve((req.result as string | undefined) ?? null);
-      req.onerror = () => reject(req.error);
+      req.onerror = () => reject(req.error ?? new Error("IndexedDB request failed"));
     });
   }
 
@@ -46,7 +46,7 @@ export class IndexedDbKv implements KvStore {
       const tx = db.transaction(STORE, "readwrite");
       tx.objectStore(STORE).put(value, key);
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      tx.onerror = () => reject(tx.error ?? new Error("IndexedDB transaction failed"));
     });
   }
 }

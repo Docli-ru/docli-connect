@@ -11,7 +11,7 @@ export interface ConfirmOpts {
   confirmText: string;
 
   warning?: boolean;
-  onConfirm: () => void;
+  onConfirm: () => void | Promise<void>;
 
   onCancel?: () => void;
 }
@@ -72,7 +72,7 @@ export class ConfirmModal extends Modal {
       .onClick(() => {
         this.confirmed = true;
         this.close();
-        this.opts.onConfirm();
+        void this.opts.onConfirm();
       });
     if (this.opts.warning) confirm.setWarning();
   }

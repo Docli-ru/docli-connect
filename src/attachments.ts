@@ -226,7 +226,7 @@ export async function downloadAttachment(
     try {
       await deps.app.vault.createFolder(dir);
     } catch {
-
+       /* noop */
     }
   }
   await deps.app.vault.createBinary(p, body);
