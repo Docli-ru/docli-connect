@@ -32,7 +32,6 @@ export class DocliSettingTab extends PluginSettingTab {
     this.shown = true;
     const { containerEl } = this;
     containerEl.empty();
-    new Setting(containerEl).setName("Docli Connect").setHeading();
 
     for (const w of [
       { title: t("settings.warn.experimental.title"), body: t("settings.warn.experimental.body") },
