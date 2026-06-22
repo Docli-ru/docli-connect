@@ -32,7 +32,7 @@ export class DocliSettingTab extends PluginSettingTab {
     this.shown = true;
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Docli Connect" });
+    new Setting(containerEl).setName("Docli Connect").setHeading();
 
     for (const w of [
       { title: t("settings.warn.experimental.title"), body: t("settings.warn.experimental.body") },
@@ -270,9 +270,9 @@ export class DocliSettingTab extends PluginSettingTab {
       .filter((f) => /\(conflict( \d+)?\)/.test(f.name))
       .sort((a, b) => a.path.localeCompare(b.path));
 
-    containerEl.createEl("h3", {
-      text: conflicts.length ? t("settings.conflicts.titleCount", { count: conflicts.length }) : t("settings.conflicts.title"),
-    });
+    new Setting(containerEl)
+      .setName(conflicts.length ? t("settings.conflicts.titleCount", { count: conflicts.length }) : t("settings.conflicts.title"))
+      .setHeading();
     if (conflicts.length === 0) {
       containerEl.createEl("p", {
         text: t("settings.conflicts.empty"),
@@ -294,9 +294,9 @@ export class DocliSettingTab extends PluginSettingTab {
 
   private renderSupersededMoves(containerEl: HTMLElement): void {
     const moves = this.plugin.settings.supersededMoves;
-    containerEl.createEl("h3", {
-      text: moves.length ? t("settings.moves.titleCount", { count: moves.length }) : t("settings.moves.title"),
-    });
+    new Setting(containerEl)
+      .setName(moves.length ? t("settings.moves.titleCount", { count: moves.length }) : t("settings.moves.title"))
+      .setHeading();
     if (moves.length === 0) {
       containerEl.createEl("p", {
         text: t("settings.moves.empty"),
