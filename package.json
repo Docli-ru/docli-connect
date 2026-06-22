@@ -1,0 +1,18 @@
+{
+  "name": "docli-connect",
+  "version": "0.1.0",
+  "description": "Sync your vault with a docli.ru workspace",
+  "author": "docli.ru",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "esbuild": "0.27.7",
+    "obsidian": "1.12.3",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8"
+  }
+}

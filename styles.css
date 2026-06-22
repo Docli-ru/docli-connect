@@ -1,0 +1,46 @@
+/* SPDX-FileCopyrightText: 2026 OOO Agitek
+ * SPDX-License-Identifier: MIT
+ *
+ * Loaded automatically by Obsidian from the plugin folder. Keeps to theme tokens
+ * (`--text-error`) so the warnings read correctly in both light and dark themes. */
+
+.docli-warning {
+  margin: 0.5em 0;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--text-error);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: hsla(var(--color-red-hsl, 0 70% 50%), 0.08);
+  color: var(--text-error);
+  font-size: var(--font-ui-small);
+  line-height: 1.45;
+}
+
+.docli-warning + .docli-warning {
+  margin-top: 0.4em;
+}
+
+.docli-warning strong {
+  display: block;
+  margin-bottom: 0.2em;
+  color: var(--text-error);
+}
+
+/* Yellow/amber notice — the "update the plugin" message (426 protocol mismatch). */
+.docli-notice {
+  margin: 0.5em 0;
+  padding: 0.6em 0.8em;
+  border: 1px solid var(--text-warning, #c79100);
+  border-left-width: 4px;
+  border-radius: 6px;
+  background: hsla(var(--color-yellow-hsl, 45 90% 45%), 0.1);
+  color: var(--text-warning, #946800);
+  font-size: var(--font-ui-small);
+  line-height: 1.45;
+}
+
+.docli-notice strong {
+  display: block;
+  margin-bottom: 0.2em;
+  color: var(--text-warning, #946800);
+}
