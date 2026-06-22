@@ -1,6 +1,6 @@
 {
   "name": "docli-connect",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sync your vault with a docli.ru workspace.",
   "author": "docli.ru",
   "license": "MIT",
