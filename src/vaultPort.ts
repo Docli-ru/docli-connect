@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { normalizePath, TFile, TFolder, type App } from "obsidian";
-import { hasReservedSegment, type Kind, type VaultEntry, type VaultPort } from "@docli/sync-client";
+import { hasReservedSegment, type Kind, type VaultEntry, type VaultPort } from "./sync-client/index.js";
 
 export function classifyFile(file: TFile): Kind {
   return file.extension.toLowerCase() === "md" ? "file" : "attachment";

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { requestUrl } from "obsidian";
-import type { HttpTransport } from "@docli/sync-client";
+import type { HttpTransport } from "./sync-client/index.js";
 import { normalizeServerUrl } from "./settings.js";
 
 export const SYNC_VERSION = "1";

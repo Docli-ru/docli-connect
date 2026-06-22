@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { emptyState, type PersistedState, type StatePort } from "@docli/sync-client";
+import { emptyState, type PersistedState, type StatePort } from "./sync-client/index.js";
 
 export interface KvStore {
   get(key: string): Promise<string | null>;

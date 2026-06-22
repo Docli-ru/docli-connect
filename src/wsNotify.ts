@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { type NotifyHandlers, type NotifyPort } from "@docli/sync-client";
+import { type NotifyHandlers, type NotifyPort } from "./sync-client/index.js";
 import { normalizeServerUrl } from "./settings.js";
 
 export function pokeUrl(serverUrl: string): string {

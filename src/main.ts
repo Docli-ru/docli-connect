@@ -15,7 +15,7 @@ import {
   type NotifyStatus,
   type RenameHint,
   type StatePort,
-} from "@docli/sync-client";
+} from "./sync-client/index.js";
 import { DEFAULT_SETTINGS, MAX_SUPERSEDED_MOVES, normalizeServerUrl, scopeKey, type DocliSettings } from "./settings.js";
 import { RequestUrlTransport, type VersionMismatchInfo } from "./transport.js";
 import { compareSemver } from "./semver.js";
