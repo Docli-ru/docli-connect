@@ -64,6 +64,23 @@ shows a small indicator: 🟢 live, 🟡 polling, 🔴 error, ⏸️ paused (unl
   again relocates the original (by content) instead of duplicating it.
 - Reserved folders (`.obsidian`, `.trash`, `.git`) are never synced.
 
+## Data safety
+
+Keep your own independent backups. Sync **merges, overwrites, and deletes files automatically** on
+both sides, and the plugin is still experimental — in rare cases it could lose data. Conflict
+handling keeps both copies rather than overwriting, but the service is provided **"as is"**, with no
+guarantee that your data is preserved, intact, or recoverable (see the [User
+Agreement](https://docli.ru/terms)). Back up your vault before you rely on it.
+
+## Privacy & legal
+
+Docli Connect syncs your vault to a docli.ru workspace, where your data is stored in Russia under
+Federal Law No. 152-FZ — no foreign processors. Creating a docli account and an access token is
+subject to:
+
+- [Privacy Policy](https://docli.ru/privacy)
+- [User Agreement](https://docli.ru/terms)
+
 ## Build from source
 
 ```bash
