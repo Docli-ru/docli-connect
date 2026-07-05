@@ -44,3 +44,17 @@
   margin-bottom: 0.2em;
   color: var(--text-warning, #946800);
 }
+
+/* v0.12.3 — the explorer custom-order drag indicator (the reorder gesture's drop slot). */
+.docli-order-indicator {
+  position: absolute;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--interactive-accent);
+  pointer-events: none;
+  z-index: 50;
+  display: none;
+}
+.docli-order-indicator.is-active {
+  display: block;
+}

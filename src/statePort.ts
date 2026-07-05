@@ -116,3 +116,43 @@ export class KvStatePort implements StatePort {
     await this.kv.set(this.key, JSON.stringify(s));
   }
 }
+
+export class PendingReordersStore {
+  private readonly key: string;
+  private chain: Promise<void> = Promise.resolve();
+
+  constructor(
+    private readonly kv: KvStore,
+    workspaceId: string,
+    clientId: string,
+  ) {
+    this.key = `reorders:${workspaceId}:${clientId}`;
+  }
+
+  async load(): Promise<Array<{ nodeId: string; beforeId: string | null; afterId: string | null }>> {
+    const raw = await this.kv.get(this.key);
+    if (!raw) return [];
+    try {
+      const v = JSON.parse(raw) as unknown;
+      return Array.isArray(v)
+        ? (v as Array<{ nodeId: string; beforeId: string | null; afterId: string | null }>)
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  save(ops: Array<{ nodeId: string; beforeId: string | null; afterId: string | null }>): Promise<void> {
+    const snapshot = JSON.stringify(ops);
+    this.chain = this.chain
+      .then(() => this.kv.set(this.key, snapshot))
+      .catch((e) => {
+        console.error("docli: pending-reorder store write failed", e);
+      });
+    return this.chain;
+  }
+
+  flush(): Promise<void> {
+    return this.chain;
+  }
+}

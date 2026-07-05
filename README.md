@@ -63,6 +63,13 @@ shows a small indicator: 🟢 live, 🟡 polling, 🔴 error, ⏸️ paused (unl
   downloads its notes. Moving a note out of a synced folder and later widening the scope to include it
   again relocates the original (by content) instead of duplicating it.
 - Reserved folders (`.obsidian`, `.trash`, `.git`) are never synced.
+- **Custom order mirror** (optional, off by default) — docli lets you order notes and folders by
+  hand (the Custom sort). Turn on **"Mirror docli custom order in the file explorer"** in settings
+  and the file explorer shows that same order; on desktop you can also drag rows onto a neighbor's
+  edge to reorder — the new order syncs back to docli. Needs the whole vault synced (it's disabled
+  while "Folders to sync" is set) and a server that has the feature enabled. It patches Obsidian's
+  file explorer, so an Obsidian update may break it — if that happens the explorer just falls back
+  to its native sort; sync itself is never affected.
 
 ## Data safety
 

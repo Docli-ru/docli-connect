@@ -14,13 +14,29 @@ import {
   type Capability,
   type NotifyStatus,
   type RenameHint,
+  type ReorderOp,
   type StatePort,
 } from "./sync-client/index.js";
-import { DEFAULT_SETTINGS, MAX_SUPERSEDED_MOVES, normalizeServerUrl, scopeKey, type DocliSettings } from "./settings.js";
+import { ExplorerOrderPatch, type OrderEntry, type ReorderRequest } from "./explorerOrder.js";
+import {
+  DEFAULT_SETTINGS,
+  MAX_SUPERSEDED_MOVES,
+  mirrorOrderAvailable,
+  normalizeServerUrl,
+  reorderGestureAdvertised,
+  scopeKey,
+  type DocliSettings,
+} from "./settings.js";
 import { RequestUrlTransport, type VersionMismatchInfo } from "./transport.js";
 import { compareSemver } from "./semver.js";
 import { ObsidianVaultPort, classifyFile } from "./vaultPort.js";
-import { IndexedDbKv, KvStatePort, PendingDeletesStore, type KvStore } from "./statePort.js";
+import {
+  IndexedDbKv,
+  KvStatePort,
+  PendingDeletesStore,
+  PendingReordersStore,
+  type KvStore,
+} from "./statePort.js";
 import { DocliSettingTab } from "./settingsTab.js";
 import { AlertModal, ConfirmModal } from "./confirmModal.js";
 import { plural, t } from "./i18n.js";
@@ -71,6 +87,19 @@ export default class DocliPlugin extends Plugin {
   private lastDrained: string[] = [];
 
   private massDeleteDeclinedUntil = 0;
+
+  private explorerOrder: ExplorerOrderPatch | null = null;
+
+  private orderEntries = new Map<string, OrderEntry>();
+
+  private orderOverrides = new Map<string, string[]>();
+
+  private pendingReorders: ReorderOp[] = [];
+
+  private reordersStore: PendingReordersStore | null = null;
+  private reordersStoreKey = "";
+
+  private mirrorGestureInstalled = false;
 
   async onload(): Promise<void> {
 
@@ -128,7 +157,13 @@ export default class DocliPlugin extends Plugin {
 
       this.scheduleInterval();
       this.startTicker();
-      this.app.workspace.onLayoutReady(() => void this.runSync(false));
+      this.app.workspace.onLayoutReady(() => {
+
+        this.applyExplorerMirror();
+        void this.refreshOrderEntries();
+        void this.runSync(false);
+      });
+      this.register(() => this.explorerOrder?.uninstall());
 
       this.connectNotify();
     } catch (e) {
@@ -145,6 +180,8 @@ export default class DocliPlugin extends Plugin {
     this.disconnectNotify();
 
     void this.deletesStore?.flush();
+
+    void this.reordersStore?.flush();
   }
 
   connectNotify(): void {
@@ -278,14 +315,103 @@ export default class DocliPlugin extends Plugin {
   }
 
   onCapabilities(caps: Capability[]): void {
+
+    const advertised = caps
+      .map((c) => c.feature)
+      .sort()
+      .join(",");
+    const advertChanged = advertised !== this.settings.serverFeatures;
+    this.settings.serverFeatures = advertised;
+
     const need = caps
       .filter((c) => compareSemver(this.manifest.version, c.minClientVersion) < 0)
       .map((c) => c.feature)
       .sort();
     const key = need.join(",");
-    if (key === this.settings.featuresNeedingUpdate) return;
-    this.settings.featuresNeedingUpdate = key;
-    if (need.length) new Notice(t("notice.featuresNeedUpdate", { features: need.join(", ") }));
+    const needChanged = key !== this.settings.featuresNeedingUpdate;
+    if (needChanged) {
+      this.settings.featuresNeedingUpdate = key;
+      if (need.length) new Notice(t("notice.featuresNeedUpdate", { features: need.join(", ") }));
+    }
+    if (advertChanged || needChanged) this.applyExplorerMirror();
+  }
+
+  private mirrorEnabled(): boolean {
+    return mirrorOrderAvailable(this.settings);
+  }
+
+  applyExplorerMirror(): void {
+    try {
+      if (this.mirrorEnabled()) {
+        const wantGesture = !Platform.isMobile && reorderGestureAdvertised(this.settings);
+        if (this.explorerOrder && this.mirrorGestureInstalled !== wantGesture) {
+          this.explorerOrder.uninstall();
+          this.explorerOrder = null;
+        }
+        if (!this.explorerOrder) {
+          this.explorerOrder = new ExplorerOrderPatch(this.app.workspace, {
+            enabled: () => this.mirrorEnabled(),
+            entryFor: (path) => this.orderEntries.get(path),
+            overrideFor: (parentPath) => this.orderOverrides.get(parentPath),
+            onReorder: (req) => this.onExplorerReorder(req),
+          });
+          if (!this.explorerOrder.install(wantGesture)) {
+            console.warn("docli: explorer order mirror unavailable (explorer internals changed?)");
+            this.explorerOrder = null;
+            return;
+          }
+          this.mirrorGestureInstalled = wantGesture;
+        }
+        this.explorerOrder.requestSort();
+      } else if (this.explorerOrder) {
+        this.explorerOrder.uninstall();
+        this.explorerOrder = null;
+      }
+    } catch (e) {
+      console.error("docli: explorer order mirror failed", e);
+      this.explorerOrder = null;
+    }
+  }
+
+  private async refreshOrderEntries(): Promise<void> {
+    if (!this.settings.mirrorCustomOrder) return;
+    try {
+      const s = await this.statePort().load();
+      const next = new Map<string, OrderEntry>();
+      for (const [path, st] of Object.entries(s.byPath)) {
+        next.set(path, { id: st.id, position: st.position });
+      }
+      this.orderEntries = next;
+      this.orderOverrides.clear();
+      this.explorerOrder?.requestSort();
+    } catch (e) {
+      console.error("docli: failed to refresh explorer order", e);
+    }
+  }
+
+  private onExplorerReorder(req: ReorderRequest): void {
+    try {
+      this.orderOverrides.set(req.parentPath, req.newOrder);
+      this.explorerOrder?.requestSort();
+      this.pendingReorders.push({ nodeId: req.nodeId, beforeId: req.beforeId, afterId: req.afterId });
+      void this.pendingReordersStore()?.save(this.pendingReorders);
+      if (this.syncing) this.dirty = true;
+      this.scheduleSync();
+    } catch (e) {
+      console.error("docli: reorder gesture failed", e);
+    }
+  }
+
+  private pendingReordersStore(): PendingReordersStore | null {
+    const { workspaceId, clientId } = this.settings;
+    if (!workspaceId || !clientId) return null;
+    const key = `${workspaceId}:${clientId}`;
+    if (!this.kv) this.kv = new IndexedDbKv();
+    if (!this.reordersStore || this.reordersStoreKey !== key) {
+      this.reordersStore = new PendingReordersStore(this.kv, workspaceId, clientId);
+      this.reordersStoreKey = key;
+    }
+    return this.reordersStore;
   }
 
   isConfigured(): boolean {
@@ -472,6 +598,23 @@ export default class DocliPlugin extends Plugin {
       }
       const client = this.buildClient(state);
 
+      {
+        const store = this.pendingReordersStore();
+        if (store) {
+          await store.flush();
+          if (this.pendingReorders.length === 0) {
+            this.pendingReorders = await store.load();
+          }
+        }
+        if (this.pendingReorders.length) {
+          const ops = this.pendingReorders.slice();
+          for (const op of ops) await client.queueReorder(op);
+
+          this.pendingReorders = this.pendingReorders.slice(ops.length);
+          void store?.save(this.pendingReorders);
+        }
+      }
+
       const adoptNeeded = Object.keys(before.byPath).length === 0;
       if (adoptNeeded || scopeChanged) {
 
@@ -507,6 +650,8 @@ export default class DocliPlugin extends Plugin {
         if (!(await client.bootstrap())) return;
       }
       await this.syncAttachments(state);
+
+      await this.refreshOrderEntries();
 
       this.settings.lastSyncedScopeKey = currentScopeKey;
       this.settings.lastSyncAt = new Date().toISOString();

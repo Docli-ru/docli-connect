@@ -1,4 +1,4 @@
-import { type Capability, type HttpTransport, type NotifyPort, type NotifyStatus, type RenameHint, type StatePort, type VaultPort } from "./ports.js";
+import { type Capability, type HttpTransport, type NotifyPort, type NotifyStatus, type RenameHint, type ReorderOp, type StatePort, type VaultPort } from "./ports.js";
 export interface SyncClientOpts {
     workspaceId: string;
     clientId: string;
@@ -41,6 +41,7 @@ export declare class SyncClient {
         unapplied: RenameHint[];
         needsReadopt: boolean;
     }>;
+    queueReorder(op: ReorderOp): Promise<void>;
     private reapplyOutboxDeletes;
     bootstrap(opts?: {
         recoverMoves?: boolean;

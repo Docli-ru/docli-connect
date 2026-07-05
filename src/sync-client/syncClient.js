@@ -126,7 +126,13 @@ export class SyncClient {
                 superseded.push({ localPath, serverPath: n.path });
                 continue;
             }
-            this.s.byPath[n.path] = { id: n.id, kind: "file", baseRev: n.rev, baseBody: n.body ?? "" };
+            this.s.byPath[n.path] = {
+                id: n.id,
+                kind: "file",
+                baseRev: n.rev,
+                baseBody: n.body ?? "",
+                position: n.position ?? undefined,
+            };
             adopted.add(n.id);
             this.o.onRecover?.({ from: n.path, to: localPath });
         }
@@ -151,6 +157,12 @@ export class SyncClient {
         }
         await this.o.state.save(this.s);
         return { unapplied: outcome.unapplied, needsReadopt: outcome.needsReadopt };
+    }
+    async queueReorder(op) {
+        this.s.reorderOutbox = [...(this.s.reorderOutbox ?? []), op];
+        const persisted = await this.o.state.load();
+        persisted.reorderOutbox = [...(persisted.reorderOutbox ?? []), op];
+        await this.o.state.save(persisted);
     }
     async reapplyOutboxDeletes() {
         const outbox = this.s.deleteOutbox;
@@ -345,6 +357,20 @@ export class SyncClient {
                     muts.push({ mutationId: ++nextMut, op: "trash", args: { nodeId: o.id } });
             }
         }
+        const sentReorders = [];
+        const reorderQueue = this.s.reorderOutbox ?? [];
+        if (reorderQueue.length) {
+            let nextMut = muts.reduce((mx, m) => Math.max(mx, m.mutationId), this.s.lastMutationId);
+            for (const r of reorderQueue) {
+                nextMut += 1;
+                muts.push({
+                    mutationId: nextMut,
+                    op: "reorder",
+                    args: { nodeId: r.nodeId, beforeId: r.beforeId, afterId: r.afterId },
+                });
+                sentReorders.push({ mutationId: nextMut, entry: r });
+            }
+        }
         let sendMuts = muts;
         if (dropPaths.size) {
             const dropIds = new Set();
@@ -383,6 +409,11 @@ export class SyncClient {
                 .map((m) => m.args.nodeId));
             const remaining = this.s.deleteOutbox.filter((o) => !doneIds.has(o.id));
             this.s.deleteOutbox = remaining.length ? remaining : undefined;
+        }
+        if (sentReorders.length && this.s.reorderOutbox?.length) {
+            const acked = new Set(sentReorders.filter((r) => result.has(r.mutationId)).map((r) => r.entry));
+            const remaining = this.s.reorderOutbox.filter((o) => !acked.has(o));
+            this.s.reorderOutbox = remaining.length ? remaining : undefined;
         }
         const accounted = (id) => {
             const s = result.get(id)?.status;

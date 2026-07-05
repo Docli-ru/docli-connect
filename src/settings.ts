@@ -39,6 +39,10 @@ export interface DocliSettings {
   lastSyncedScopeKey: string;
 
   featuresNeedingUpdate: string;
+
+  serverFeatures: string;
+
+  mirrorCustomOrder: boolean;
 }
 
 export const DEFAULT_SETTINGS: DocliSettings = {
@@ -56,12 +60,28 @@ export const DEFAULT_SETTINGS: DocliSettings = {
   supersededMoves: [],
   lastSyncedScopeKey: "",
   featuresNeedingUpdate: "",
+  serverFeatures: "",
+  mirrorCustomOrder: false,
 };
 
 export const MAX_SUPERSEDED_MOVES = 50;
 
 export function normalizeServerUrl(url: string): string {
   return url.trim().replace(/\/+$/, "");
+}
+
+export function mirrorOrderAvailable(s: DocliSettings): boolean {
+  return (
+    s.mirrorCustomOrder &&
+    s.syncFolders.length === 0 &&
+    s.locked &&
+    Boolean(s.serverUrl && s.pat && s.workspaceId && s.clientId)
+  );
+}
+
+export function reorderGestureAdvertised(s: DocliSettings): boolean {
+  const has = (csv: string, f: string) => csv.split(",").includes(f);
+  return has(s.serverFeatures, "reorder") && !has(s.featuresNeedingUpdate, "reorder");
 }
 
 export function scopeKey(folders: string[]): string {

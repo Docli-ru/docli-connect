@@ -7,3 +7,4 @@ export { MemoryVault, MemoryStatePort, MemoryNotifyPort } from "./memory.js";
 export { withRetry } from "./retry.js";
 export { mapLimit } from "./pool.js";
 export { siblingPath, folderScope, isScopeWiden } from "./paths.js";
+export { naturalCmp } from "./order.js";

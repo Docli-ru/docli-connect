@@ -29,6 +29,7 @@ export interface NodeState {
     kind: Kind;
     baseRev: number;
     baseBody?: string;
+    position?: string;
 }
 export interface ReleasedNode {
     path: string;
@@ -48,6 +49,12 @@ export interface PersistedState {
         id: string;
         path: string;
     }>;
+    reorderOutbox?: ReorderOp[];
+}
+export interface ReorderOp {
+    nodeId: string;
+    beforeId: string | null;
+    afterId: string | null;
 }
 export interface StatePort {
     load(): Promise<PersistedState>;
@@ -86,6 +93,7 @@ export interface PulledNode {
     contentBytes: number;
     body: string | null;
     blobUrl: string | null;
+    position?: string | null;
 }
 export interface Capability {
     feature: string;
@@ -101,7 +109,7 @@ export interface PullResponse {
 }
 export interface Mutation {
     mutationId: number;
-    op: "createFolder" | "createNote" | "putBody" | "rename" | "move" | "trash" | "restore";
+    op: "createFolder" | "createNote" | "putBody" | "rename" | "move" | "trash" | "restore" | "reorder";
     args: Record<string, unknown>;
 }
 export interface OpResult {

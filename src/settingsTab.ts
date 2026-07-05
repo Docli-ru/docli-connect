@@ -159,6 +159,8 @@ export class DocliSettingTab extends PluginSettingTab {
 
                 this.plugin.clearUpgradeNotice();
                 this.plugin.scheduleInterval();
+
+                this.plugin.applyExplorerMirror();
                 new Notice(t("notice.unlocked"));
                 this.display();
               });
@@ -183,6 +185,8 @@ export class DocliSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                     this.plugin.connectNotify();
                     this.plugin.scheduleInterval();
+
+                    this.plugin.applyExplorerMirror();
                     void this.plugin.runSync(true);
                     new Notice(t("notice.locked"));
                     this.display();
@@ -234,12 +238,34 @@ export class DocliSettingTab extends PluginSettingTab {
               .filter((line) => line.length > 0);
             const changed = next.join("\n") !== this.plugin.settings.syncFolders.join("\n");
             this.plugin.settings.syncFolders = next;
+
+            if (next.length > 0 && this.plugin.settings.mirrorCustomOrder) {
+              this.plugin.settings.mirrorCustomOrder = false;
+              new Notice(t("notice.mirrorDisabledPartial"));
+              this.plugin.applyExplorerMirror();
+              this.refreshIfOpen();
+            }
             await this.plugin.saveSettings();
 
             if (changed) this.plugin.onScopeChanged();
           });
         text.inputEl.rows = 3;
       });
+
+    const partial = this.plugin.settings.syncFolders.length > 0;
+    new Setting(containerEl)
+      .setName(t("settings.mirror.name"))
+      .setDesc(partial ? t("settings.mirror.descPartial") : t("settings.mirror.desc"))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.mirrorCustomOrder && !partial)
+          .setDisabled(partial)
+          .onChange(async (v) => {
+            this.plugin.settings.mirrorCustomOrder = v;
+            await this.plugin.saveSettings();
+            this.plugin.applyExplorerMirror();
+          }),
+      );
 
     const locked = this.plugin.settings.locked;
     new Setting(containerEl)

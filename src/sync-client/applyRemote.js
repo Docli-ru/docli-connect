@@ -57,7 +57,7 @@ export async function applyRemote(nodes, vault, state, opts = {}) {
         }
         if (n.kind === "folder") {
             await vault.mkdir(n.path);
-            state.byPath[n.path] = { id: n.id, kind: "folder", baseRev: n.rev };
+            state.byPath[n.path] = { id: n.id, kind: "folder", baseRev: n.rev, position: n.position ?? undefined };
         }
         else if (n.kind === "file") {
             const serverBody = n.body ?? "";
@@ -80,10 +80,10 @@ export async function applyRemote(nodes, vault, state, opts = {}) {
             if (toWrite !== cur || (untracked && toWrite === "" && !ourEcho)) {
                 await vault.writeFile(n.path, toWrite);
             }
-            state.byPath[n.path] = { id: n.id, kind: "file", baseRev: n.rev, baseBody: serverBody };
+            state.byPath[n.path] = { id: n.id, kind: "file", baseRev: n.rev, baseBody: serverBody, position: n.position ?? undefined };
         }
         else {
-            state.byPath[n.path] = { id: n.id, kind: "attachment", baseRev: n.rev };
+            state.byPath[n.path] = { id: n.id, kind: "attachment", baseRev: n.rev, position: n.position ?? undefined };
         }
     }
     return seen;

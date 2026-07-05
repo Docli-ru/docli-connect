@@ -100,6 +100,16 @@ const en = {
     "Only the listed folders and their contents are mirrored; everything else stays untouched. " +
     "Changing this re-pulls from the server on the next sync — adding a folder downloads its notes, " +
     "removing one un-syncs (but never deletes) them.",
+  "settings.mirror.name": "Mirror docli custom order in the file explorer",
+  "settings.mirror.desc":
+    "Show your docli manual order in the file explorer, and (on desktop) drag rows to reorder — " +
+    "the new order is pushed back to docli. May break when Obsidian updates its explorer internals; " +
+    "if it does, the explorer falls back to its native sort — sync itself is never affected.",
+  "settings.mirror.descPartial":
+    "Unavailable while “Folders to sync” is set — the order mirror needs the whole vault synced " +
+    "(a partially-synced explorer interleaves local-only files the server can't order).",
+  "notice.mirrorDisabledPartial":
+    "docli: custom-order mirror turned off — it needs the whole vault synced.",
   "settings.syncNow.name": "Sync now",
   "settings.syncNow.button": "Sync now",
   "settings.syncNow.descUnlocked": "Lock the workspace above to start syncing.",
@@ -237,6 +247,18 @@ const ru: Record<I18nKey, string> = {
     "Зеркалируются только перечисленные папки и их содержимое; остальное не затрагивается. " +
     "Изменение этого списка заново загружает данные с сервера при следующей синхронизации — добавление папки скачивает её заметки, " +
     "удаление прекращает синхронизацию (но никогда не удаляет) их.",
+  "settings.mirror.name": "Отражать порядок докли в проводнике файлов",
+  "settings.mirror.desc":
+    "Показывать ваш ручной порядок из докли в проводнике файлов и (на компьютере) перетаскивать " +
+    "строки для изменения порядка — новый порядок отправляется в докли. Может перестать работать " +
+    "после обновления Obsidian; тогда проводник вернётся к обычной сортировке — сама синхронизация " +
+    "никогда не затрагивается.",
+  "settings.mirror.descPartial":
+    "Недоступно, пока задан список «Папки для синхронизации» — зеркалу порядка нужна синхронизация " +
+    "всего хранилища (при частичной синхронизации проводник перемешивает локальные файлы, " +
+    "которые сервер не может упорядочить).",
+  "notice.mirrorDisabledPartial":
+    "докли: зеркало порядка выключено — ему нужна синхронизация всего хранилища.",
   "settings.syncNow.name": "Синхронизировать сейчас",
   "settings.syncNow.button": "Синхронизировать сейчас",
   "settings.syncNow.descUnlocked": "Заблокируйте пространство выше, чтобы начать синхронизацию.",
