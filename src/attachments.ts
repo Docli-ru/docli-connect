@@ -26,11 +26,7 @@ const SERVER_CHUNK_MAX = 200 * 1024 * 1024;
 const CHUNK_SIZE = 8 * 1024 * 1024;
 const DOWNLOAD_CHUNK = 8 * 1024 * 1024;
 
-export type UploadResult = "uploaded" | "skipped-large" | "skipped-type" | "failed";
-
-export function isUploadableAttachment(ext: string): boolean {
-  return ext.toLowerCase() in MIME;
-}
+export type UploadResult = "uploaded" | "skipped-large" | "failed";
 
 export function mimeForExt(ext: string): string {
   return MIME[ext.toLowerCase()] ?? "application/octet-stream";
@@ -97,7 +93,6 @@ export interface AttachmentDeps {
 }
 
 export async function uploadAttachment(deps: AttachmentDeps, file: TFile): Promise<UploadResult> {
-  if (!isUploadableAttachment(file.extension)) return "skipped-type";
   const bytes = await deps.app.vault.readBinary(file);
   const size = bytes.byteLength;
   if (size > deps.maxBytes || size > SERVER_CHUNK_MAX) return "skipped-large";

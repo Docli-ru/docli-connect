@@ -715,10 +715,10 @@ export default class DocliPlugin extends Plugin {
       }
       if (res === "uploaded") {
         this.uploaded.add(f.path);
-      } else if (res === "skipped-large" || res === "skipped-type") {
+      } else if (res === "skipped-large") {
         if (!this.skipNotified.has(f.path)) {
           this.skipNotified.add(f.path);
-          skipped.push(`${f.name} (${res === "skipped-large" ? t("attach.tooLarge") : t("attach.unsupported")})`);
+          skipped.push(`${f.name} (${t("attach.tooLarge")})`);
         }
       }
 

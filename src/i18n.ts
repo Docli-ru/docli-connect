@@ -37,7 +37,6 @@ const en = {
   "notice.featuresNeedUpdate": "docli: update the plugin to use newer features ({features}). Sync still works.",
 
   "attach.tooLarge": "too large",
-  "attach.unsupported": "unsupported type",
 
   "modal.lock.title": "Start syncing this vault?",
   "modal.lock.body1": 'Locking will sync THIS vault with the "@{handle}" space — both directions.',
@@ -179,7 +178,6 @@ const ru: Record<I18nKey, string> = {
   "notice.featuresNeedUpdate": "docli: обновите плагин, чтобы использовать новые возможности ({features}). Синхронизация продолжает работать.",
 
   "attach.tooLarge": "слишком большой",
-  "attach.unsupported": "неподдерживаемый тип",
 
   "modal.lock.title": "Начать синхронизацию этого хранилища?",
   "modal.lock.body1": "Блокировка синхронизирует ЭТО хранилище с пространством «@{handle}» — в обе стороны.",
