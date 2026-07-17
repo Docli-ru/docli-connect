@@ -48,8 +48,9 @@ shows a small indicator: 🟢 live, 🟡 polling, 🔴 error, ⏸️ paused (unl
   everywhere. A note deleted *while Obsidian is closed* is treated cautiously (it can't be told apart
   from a vault that hasn't finished loading): it is **restored from the server** rather than deleted —
   so delete from inside Obsidian (or the web) to remove it for good.
-- **Attachments** (images, PDF, audio, video) sync as files. Large ones transfer in chunks; files
-  above your size limit are skipped with a notice.
+- **Attachments** of any file type sync as files — images, PDF, audio, and video preview in docli;
+  other types download from it. Large ones transfer in chunks; files above your size limit are
+  skipped with a notice.
 - **Renames and moves** are tracked so links and history follow the note — even when the rename
   signal is lost (a dropped event, a restart, or a folder moved back into scope): the note is matched
   by its content and its identity is preserved rather than re-created. If a note was moved in two
