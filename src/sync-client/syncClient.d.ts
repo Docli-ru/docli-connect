@@ -1,5 +1,6 @@
 import { type Capability, type HttpTransport, type NotifyPort, type NotifyStatus, type RenameHint, type ReorderOp, type StatePort, type VaultPort } from "./ports.js";
 export interface SyncClientOpts {
+    foldPath?: (p: string) => string;
     workspaceId: string;
     clientId: string;
     vault: VaultPort;
@@ -31,8 +32,13 @@ export declare function isMassDelete(trash: number, trackedLive: number): boolea
 export declare class SyncClient {
     private readonly o;
     private s;
+    private refusedMoves;
+    private attachmentsOn;
     constructor(o: SyncClientOpts);
     private inScope;
+    attachmentsCapable(): boolean;
+    private noteCapabilities;
+    private adoptPersistedCapability;
     private scopePulled;
     private knownKindPulled;
     private adoptContentMoves;
@@ -51,5 +57,7 @@ export declare class SyncClient {
     private unparkFresh;
     private sendChunked;
     private pullDelta;
+    private retryQuarantined;
+    private clearQuarantineForResync;
     private localFileMap;
 }

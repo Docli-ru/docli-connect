@@ -1,17 +1,18 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { Notice, Platform, Plugin, TFile } from "obsidian";
+import { Notice, Platform, Plugin } from "obsidian";
 import {
   emptyState,
   folderScope,
   hasReservedSegment,
   isScopeWiden,
-  mapLimit,
   NIL_UUID,
   SyncClient,
+  syncAttachmentBytes,
   withRetry,
   type Capability,
+  type AttachmentNotice,
   type NotifyStatus,
   type RenameHint,
   type ReorderOp,
@@ -29,7 +30,7 @@ import {
 } from "./settings.js";
 import { RequestUrlTransport, type VersionMismatchInfo } from "./transport.js";
 import { compareSemver } from "./semver.js";
-import { ObsidianVaultPort, classifyFile } from "./vaultPort.js";
+import { ObsidianVaultPort } from "./vaultPort.js";
 import {
   IndexedDbKv,
   KvStatePort,
@@ -41,7 +42,16 @@ import { DocliSettingTab } from "./settingsTab.js";
 import { AlertModal, ConfirmModal } from "./confirmModal.js";
 import { plural, t } from "./i18n.js";
 import { WebSocketNotifyPort } from "./wsNotify.js";
-import { downloadAttachment, uploadAttachment, type AttachmentDeps } from "./attachments.js";
+import { RequestUrlBlobPort, type AttachmentDeps } from "./attachments.js";
+import { decodeWinPath } from "./winPath.js";
+
+function platformName(): string {
+  if (Platform.isIosApp) return "ios";
+  if (Platform.isAndroidApp) return "android";
+  if (Platform.isWin) return "windows";
+  if (Platform.isMacOS) return "macos";
+  return Platform.isMobile ? "mobile" : "linux";
+}
 
 export default class DocliPlugin extends Plugin {
   settings: DocliSettings = { ...DEFAULT_SETTINGS };
@@ -53,8 +63,6 @@ export default class DocliPlugin extends Plugin {
 
   private pendingHints: RenameHint[] = [];
 
-  private readonly uploaded = new Set<string>();
-
   private readonly skipNotified = new Set<string>();
   private syncing = false;
   private debounce: number | null = null;
@@ -64,6 +72,8 @@ export default class DocliPlugin extends Plugin {
   private nextSyncAt: number | null = null;
 
   private lastError = false;
+
+  private quarantinedPaths: string[] = [];
 
   upgradeRequired = false;
 
@@ -122,21 +132,22 @@ export default class DocliPlugin extends Plugin {
 
       this.registerEvent(
         this.app.vault.on("rename", (file, oldPath) => {
-          if (!hasReservedSegment(oldPath) && !hasReservedSegment(file.path)) {
-            this.pendingHints.push({ oldPath, newPath: file.path });
+
+          const oldServer = this.toServerPath(oldPath);
+          const newServer = this.toServerPath(file.path);
+          if (!hasReservedSegment(oldServer) && !hasReservedSegment(newServer)) {
+            this.pendingHints.push({ oldPath: oldServer, newPath: newServer });
           }
+          this.skipNotified.delete(oldServer);
 
-          this.uploaded.delete(oldPath);
-          this.skipNotified.delete(oldPath);
-
-          this.dropPendingDelete(file.path);
+          this.dropPendingDelete(newServer);
           this.scheduleSync();
         }),
       );
       this.registerEvent(
         this.app.vault.on("create", (file) => {
 
-          this.dropPendingDelete(file.path);
+          this.dropPendingDelete(this.toServerPath(file.path));
           this.scheduleSync();
         }),
       );
@@ -144,13 +155,12 @@ export default class DocliPlugin extends Plugin {
       this.registerEvent(
         this.app.vault.on("delete", (file) => {
 
-          if (!hasReservedSegment(file.path)) {
-            this.pendingDeletes.push(file.path);
+          const serverPath = this.toServerPath(file.path);
+          if (!hasReservedSegment(serverPath)) {
+            this.pendingDeletes.push(serverPath);
             this.persistTombstones();
           }
-
-          this.uploaded.delete(file.path);
-          this.skipNotified.delete(file.path);
+          this.skipNotified.delete(serverPath);
           this.scheduleSync();
         }),
       );
@@ -264,6 +274,19 @@ export default class DocliPlugin extends Plugin {
     }
     if (this.syncing) {
       return this.paintStatus(this.notifyStatus === "connected" ? "green" : "yellow", t("status.syncing", { last }));
+    }
+    if (this.quarantinedPaths.length) {
+
+      const head = this.quarantinedPaths.slice(0, 3).join(", ");
+      return this.paintStatus(
+        "yellow",
+        t("status.quarantined", {
+          count: this.quarantinedPaths.length,
+          head,
+          ellipsis: this.quarantinedPaths.length > 3 ? "…" : "",
+          last,
+        }),
+      );
     }
     if (this.notifyStatus === "connected") {
       return this.paintStatus("green", t("status.live", { last }));
@@ -481,7 +504,13 @@ export default class DocliPlugin extends Plugin {
   }
 
   private syncScope(): ((path: string) => boolean) | undefined {
-    return this.settings.syncFolders.length ? folderScope(this.settings.syncFolders) : undefined;
+    if (!this.settings.syncFolders.length) return undefined;
+
+    return folderScope(this.settings.syncFolders.map((f) => this.toServerPath(f)));
+  }
+
+  private toServerPath(localPath: string): string {
+    return Platform.isWin ? decodeWinPath(localPath) : localPath;
   }
 
   onScopeChanged(): void {
@@ -494,12 +523,18 @@ export default class DocliPlugin extends Plugin {
       clientId: this.settings.clientId,
       vault: new ObsidianVaultPort(this.app),
 
+      foldPath: (p) => {
+        const n = p.normalize("NFC");
+        return Platform.isMacOS || Platform.isWin || Platform.isIosApp ? n.toLowerCase() : n;
+      },
+
       transport: withRetry(
         new RequestUrlTransport(
           this.settings.serverUrl,
           this.settings.pat,
           (info) => this.onVersionMismatch(info),
           this.manifest.version,
+          platformName(),
         ),
       ),
       state,
@@ -649,7 +684,15 @@ export default class DocliPlugin extends Plugin {
 
         if (!(await client.bootstrap())) return;
       }
-      await this.syncAttachments(state);
+      await this.syncAttachments(state, client.attachmentsCapable());
+
+      {
+        const post = await state.load();
+        this.quarantinedPaths = [
+          ...Object.values(post.quarantine ?? {}).map((r) => r.payload.path),
+          ...(post.absenteeQuarantine ?? []).map((a) => a.path),
+        ];
+      }
 
       await this.refreshOrderEntries();
 
@@ -679,8 +722,7 @@ export default class DocliPlugin extends Plugin {
     }
   }
 
-  private async syncAttachments(state: StatePort): Promise<void> {
-    const s = await state.load();
+  private async syncAttachments(state: StatePort, enabled: boolean): Promise<void> {
     const deps: AttachmentDeps = {
       app: this.app,
       serverUrl: this.settings.serverUrl,
@@ -688,61 +730,72 @@ export default class DocliPlugin extends Plugin {
       workspaceId: this.settings.workspaceId,
       maxBytes: Math.max(1, this.settings.maxAttachmentMiB) * 1024 * 1024,
     };
+    const skippedLarge: string[] = [];
+    const failed: string[] = [];
+    await syncAttachmentBytes({
+      vault: new ObsidianVaultPort(this.app),
+      state,
+      blob: new RequestUrlBlobPort(deps),
+      scope: this.syncScope(),
+      enabled,
+      onNotice: (n: AttachmentNotice) => {
+        switch (n.kind) {
+          case "conflict":
+            new Notice(t("notice.conflictSaved", { original: n.path, savedAs: n.savedAs }));
+            break;
+          case "skipped-large":
+            if (!this.skipNotified.has(n.path)) {
+              this.skipNotified.add(n.path);
+              skippedLarge.push(n.path);
+            }
+            break;
+          case "download-failed":
+          case "upload-failed":
+            if (!this.skipNotified.has(n.path)) {
+              this.skipNotified.add(n.path);
+              failed.push(n.path);
+            }
+            console.error(`docli: attachment transfer failed for ${n.path}`, n.detail ?? "");
+            break;
+          case "held":
 
-    const concurrency = Platform.isMobile ? 2 : 4;
+            console.warn(`docli: attachment held: ${n.path} (${n.detail})`);
+            break;
+          case "transferred":
 
-    const inScope = this.syncScope();
-    const toUpload = this.app.vault
-      .getAllLoadedFiles()
-      .filter(
-        (f): f is TFile =>
-          f instanceof TFile &&
-          classifyFile(f) === "attachment" &&
-          !hasReservedSegment(f.path) &&
-          (!inScope || inScope(f.path)) &&
-          !s.byPath[f.path] &&
-          !this.uploaded.has(f.path),
-      );
-    const skipped: string[] = [];
-    await mapLimit(toUpload, concurrency, async (f) => {
-      let res;
-      try {
-        res = await uploadAttachment(deps, f);
-      } catch (e) {
-
-        console.error(`docli: failed to upload attachment ${f.path}`, e);
-        return;
-      }
-      if (res === "uploaded") {
-        this.uploaded.add(f.path);
-      } else if (res === "skipped-large") {
-        if (!this.skipNotified.has(f.path)) {
-          this.skipNotified.add(f.path);
-          skipped.push(`${f.name} (${t("attach.tooLarge")})`);
+            this.skipNotified.delete(n.path);
+            break;
         }
-      }
-
+      },
     });
-    if (skipped.length) {
-      const head = skipped.slice(0, 3).join(", ");
+    if (skippedLarge.length) {
+      const head = skippedLarge
+        .slice(0, 3)
+        .map((p) => `${p.slice(p.lastIndexOf("/") + 1)} (${t("attach.tooLarge")})`)
+        .join(", ");
       new Notice(
         t("notice.skippedAttachments", {
-          count: skipped.length,
-          noun: plural("noun.attachment", skipped.length),
+          count: skippedLarge.length,
+          noun: plural("noun.attachment", skippedLarge.length),
           head,
-          ellipsis: skipped.length > 3 ? "…" : "",
+          ellipsis: skippedLarge.length > 3 ? "…" : "",
         }),
       );
     }
-
-    const toDownload = Object.entries(s.byPath).filter(([, st]) => st.kind === "attachment");
-    await mapLimit(toDownload, concurrency, async ([path, st]) => {
-      try {
-        await downloadAttachment(deps, st.id, path);
-      } catch (e) {
-        console.error(`docli: failed to download attachment ${path}`, e);
-      }
-    });
+    if (failed.length) {
+      const head = failed
+        .slice(0, 3)
+        .map((p) => p.slice(p.lastIndexOf("/") + 1))
+        .join(", ");
+      new Notice(
+        t("notice.attachmentsFailed", {
+          count: failed.length,
+          noun: plural("noun.attachment", failed.length),
+          head,
+          ellipsis: failed.length > 3 ? "…" : "",
+        }),
+      );
+    }
   }
 
 }

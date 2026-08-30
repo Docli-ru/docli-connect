@@ -2,8 +2,14 @@ import { type NotifyHandlers, type NotifyPort, type PersistedState, type StatePo
 export declare class MemoryVault implements VaultPort {
     private files;
     private folders;
+    private binaries;
+    private clock;
+    readonly suspectPaths: Set<string>;
+    readonly failPaths: Set<string>;
+    private failIf;
     private pendingDeletes;
     list(): Promise<VaultEntry[]>;
+    listMeta(): Promise<VaultEntry[]>;
     scan(drainDeletes?: () => string[]): Promise<{
         entries: VaultEntry[];
         deletedPaths: string[];
@@ -14,8 +20,18 @@ export declare class MemoryVault implements VaultPort {
     mkdir(path: string): Promise<void>;
     private addAncestors;
     remove(path: string): Promise<void>;
+    stat(path: string): Promise<{
+        size: number;
+        mtime: number;
+    } | null>;
+    readBinary(path: string): Promise<Uint8Array>;
+    writeBinary(path: string, bytes: Uint8Array): Promise<void>;
     move(from: string, to: string): Promise<void>;
     put(path: string, body: string): void;
+    putBinary(path: string, bytes: Uint8Array): void;
+    binary(path: string): Uint8Array | undefined;
+    binaryPaths(): string[];
+    hasFolder(path: string): boolean;
     del(path: string): void;
     snapshot(): Record<string, string>;
 }

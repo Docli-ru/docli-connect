@@ -55,6 +55,8 @@ export function reconcile(entries, state, hints = [], appliedRekeys = []) {
     };
     for (const e of entries.slice().sort((a, b) => a.path.localeCompare(b.path))) {
         const known = state.byPath[e.path];
+        if (e.kind === "file" && e.suspectRead)
+            continue;
         if (!known) {
             if (e.kind === "attachment")
                 continue;

@@ -34,6 +34,8 @@ const en = {
   "notice.conflictSaved": 'docli: "{original}" was taken — saved your copy as "{savedAs}".',
   "notice.moveOverridden": 'docli: "{localPath}" was moved to "{serverPath}" elsewhere — kept the server\'s location.',
   "notice.skippedAttachments": "docli: skipped {count} {noun}: {head}{ellipsis}",
+  "notice.attachmentsFailed": "docli: {count} {noun} failed to transfer: {head}{ellipsis} — will retry.",
+  "status.quarantined": "docli: syncing, but {count} item(s) could not be applied locally: {head}{ellipsis} — retrying. {last}",
   "notice.featuresNeedUpdate": "docli: update the plugin to use newer features ({features}). Sync still works.",
 
   "attach.tooLarge": "too large",
@@ -175,6 +177,8 @@ const ru: Record<I18nKey, string> = {
   "notice.moveOverridden":
     "docli: «{localPath}» перемещено в «{serverPath}» на другом устройстве — оставлено расположение с сервера.",
   "notice.skippedAttachments": "docli: пропущено {count} {noun}: {head}{ellipsis}",
+  "notice.attachmentsFailed": "docli: не удалось передать {count} {noun}: {head}{ellipsis} — повторим позже.",
+  "status.quarantined": "docli: синхронизация идёт, но не удалось применить локально ({count}): {head}{ellipsis} — повторяем. {last}",
   "notice.featuresNeedUpdate": "docli: обновите плагин, чтобы использовать новые возможности ({features}). Синхронизация продолжает работать.",
 
   "attach.tooLarge": "слишком большой",

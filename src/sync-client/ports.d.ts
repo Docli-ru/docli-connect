@@ -5,6 +5,9 @@ export interface VaultEntry {
     path: string;
     kind: Kind;
     body?: string;
+    size?: number;
+    mtime?: number;
+    suspectRead?: boolean;
 }
 export interface VaultPort {
     list(): Promise<VaultEntry[]>;
@@ -17,6 +20,13 @@ export interface VaultPort {
     mkdir(path: string): Promise<void>;
     remove(path: string): Promise<void>;
     move(from: string, to: string): Promise<void>;
+    stat(path: string): Promise<{
+        size: number;
+        mtime: number;
+    } | null>;
+    listMeta?(): Promise<VaultEntry[]>;
+    readBinary(path: string): Promise<Uint8Array>;
+    writeBinary(path: string, bytes: Uint8Array): Promise<void>;
 }
 export interface HttpTransport {
     post(path: string, body: unknown): Promise<{
@@ -30,6 +40,15 @@ export interface NodeState {
     baseRev: number;
     baseBody?: string;
     position?: string;
+    baseGeneration?: number;
+    baseSha256?: string;
+    baseSize?: number;
+    baseMtime?: number;
+    remoteGeneration?: number;
+    remoteSha256?: string | null;
+    blobUrl?: string | null;
+    materialized?: boolean;
+    restorePending?: boolean;
 }
 export interface ReleasedNode {
     path: string;
@@ -49,7 +68,26 @@ export interface PersistedState {
         id: string;
         path: string;
     }>;
+    quarantine?: Record<string, QuarantineRecord>;
+    quarantineFlushPending?: boolean;
+    serverAttachments?: boolean;
+    attachmentSeedPending?: boolean;
+    absenteeQuarantine?: AbsenteeRecord[];
     reorderOutbox?: ReorderOp[];
+}
+export interface QuarantineRecord {
+    payload: PulledNode;
+    prevRev: number;
+    prevId: string;
+    reason: string;
+    attempts: number;
+    cooldown?: number;
+    groupPrefix?: string;
+}
+export interface AbsenteeRecord {
+    id: string;
+    path: string;
+    reason: string;
 }
 export interface ReorderOp {
     nodeId: string;
@@ -94,6 +132,8 @@ export interface PulledNode {
     body: string | null;
     blobUrl: string | null;
     position?: string | null;
+    sha256?: string | null;
+    blobGeneration?: number | null;
 }
 export interface Capability {
     feature: string;

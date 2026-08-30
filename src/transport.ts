@@ -21,6 +21,8 @@ export class RequestUrlTransport implements HttpTransport {
     private readonly onVersionMismatch?: (info: VersionMismatchInfo) => void,
 
     private readonly pluginVersion?: string,
+
+    private readonly platform?: string,
   ) {}
 
   async post(path: string, body: unknown): Promise<{ status: number; json: unknown }> {
@@ -30,6 +32,7 @@ export class RequestUrlTransport implements HttpTransport {
       "X-Docli-Sync-Version": SYNC_VERSION,
     };
     if (this.pluginVersion) headers["X-Docli-Plugin-Version"] = this.pluginVersion;
+    if (this.platform) headers["X-Docli-Client-Platform"] = this.platform;
     const resp = await requestUrl({
       url,
       method: "POST",

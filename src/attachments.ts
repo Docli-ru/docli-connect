@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { normalizePath, requestUrl, TFile, type App } from "obsidian";
+import { requestUrl, type App } from "obsidian";
+import { sha256Hex, type BlobPort, type BlobPutResult } from "./sync-client/index.js";
 import { normalizeServerUrl } from "./settings.js";
 
 const MIME: Record<string, string> = {
@@ -26,16 +27,9 @@ const SERVER_CHUNK_MAX = 200 * 1024 * 1024;
 const CHUNK_SIZE = 8 * 1024 * 1024;
 const DOWNLOAD_CHUNK = 8 * 1024 * 1024;
 
-export type UploadResult = "uploaded" | "skipped-large" | "failed";
-
 export function mimeForExt(ext: string): string {
   return MIME[ext.toLowerCase()] ?? "application/octet-stream";
 }
-
-const dirOf = (path: string): string => {
-  const slash = path.lastIndexOf("/");
-  return slash < 0 ? "" : path.slice(0, slash);
-};
 
 function concat(parts: Uint8Array[]): Uint8Array {
   const total = parts.reduce((n, p) => n + p.length, 0);
@@ -92,108 +86,138 @@ export interface AttachmentDeps {
   maxBytes: number;
 }
 
-export async function uploadAttachment(deps: AttachmentDeps, file: TFile): Promise<UploadResult> {
-  const bytes = await deps.app.vault.readBinary(file);
-  const size = bytes.byteLength;
-  if (size > deps.maxBytes || size > SERVER_CHUNK_MAX) return "skipped-large";
+export class RequestUrlBlobPort implements BlobPort {
+  constructor(private readonly deps: AttachmentDeps) {}
 
-  if (size <= WHOLE_FILE_MAX) return uploadWhole(deps, file, bytes);
-  return uploadChunked(deps, file, bytes);
-}
+  async putBlob(
+    nodeId: string,
+    baseGeneration: number,
+    sha256: string,
+    bytes: Uint8Array,
+  ): Promise<BlobPutResult> {
 
-async function uploadWhole(deps: AttachmentDeps, file: TFile, bytes: ArrayBuffer): Promise<UploadResult> {
-  const { body, contentType } = buildMultipart(
-    { workspace_id: deps.workspaceId, path: file.path },
-    { name: file.name, mime: mimeForExt(file.extension), bytes },
-  );
-  const resp = await requestUrl({
-    url: normalizeServerUrl(deps.serverUrl) + "/api/upload",
-    method: "POST",
-    contentType,
-    headers: { Authorization: `Bearer ${deps.pat}` },
-    body,
-    throw: false,
-  });
-  return resp.status === 200 ? "uploaded" : "failed";
-}
-
-async function uploadChunked(deps: AttachmentDeps, file: TFile, bytes: ArrayBuffer): Promise<UploadResult> {
-  const base = normalizeServerUrl(deps.serverUrl);
-  const auth = { Authorization: `Bearer ${deps.pat}` };
-  const mtime = (file as unknown as { stat?: { mtime?: number } }).stat?.mtime ?? 0;
-
-  const uploadId = uploadIdFor(`${file.path}:${bytes.byteLength}:${mtime}:${contentFingerprint(bytes)}`);
-
-  const init = await requestUrl({
-    url: base + "/api/upload/chunk/init",
-    method: "POST",
-    contentType: "application/json",
-    headers: auth,
-    body: JSON.stringify({
-      workspaceId: deps.workspaceId,
-      uploadId,
-      path: file.path,
-      totalBytes: bytes.byteLength,
-    }),
-    throw: false,
-  });
-  if (init.status !== 200) return "failed";
-  let received = Number((init.json as { receivedBytes?: string })?.receivedBytes ?? 0);
-
-  const all = new Uint8Array(bytes);
-  while (received < bytes.byteLength) {
-    const end = Math.min(received + CHUNK_SIZE, bytes.byteLength);
-    const chunk = all.slice(received, end);
-    const resp = await requestUrl({
-      url: base + "/api/upload/chunk/append",
-      method: "POST",
-      contentType: "application/octet-stream",
-      headers: {
-        ...auth,
-        "X-Docli-Workspace": deps.workspaceId,
-        "X-Docli-Upload-Id": uploadId,
-        "X-Docli-Offset": String(received),
-      },
-      body: toArrayBuffer(chunk),
-      throw: false,
-    });
-    if (resp.status !== 200) return "failed";
-    const next = Number((resp.json as { receivedBytes?: string })?.receivedBytes ?? received);
-    if (next <= received) return "failed";
-    received = next;
+    try {
+      return await this.putBlobInner(nodeId, baseGeneration, sha256, bytes);
+    } catch {
+      return { ok: false, kind: "failed", detail: "network error" };
+    }
   }
 
-  const done = await requestUrl({
-    url: base + "/api/upload/chunk/complete",
-    method: "POST",
-    contentType: "application/json",
-    headers: auth,
-    body: JSON.stringify({ workspaceId: deps.workspaceId, uploadId }),
-    throw: false,
-  });
-  return done.status === 200 ? "uploaded" : "failed";
-}
+  private async putBlobInner(
+    nodeId: string,
+    baseGeneration: number,
+    sha256: string,
+    bytes: Uint8Array,
+  ): Promise<BlobPutResult> {
+    const size = bytes.byteLength;
+    if (size > this.deps.maxBytes || size > SERVER_CHUNK_MAX) {
 
-export async function downloadAttachment(
-  deps: AttachmentDeps,
-  nodeId: string,
-  path: string,
-): Promise<boolean> {
-  const p = normalizePath(path);
-  if (deps.app.vault.getAbstractFileByPath(p) instanceof TFile) return false;
-  const url = normalizeServerUrl(deps.serverUrl) + `/api/attachments/${nodeId}`;
-  const auth = { Authorization: `Bearer ${deps.pat}` };
+      return { ok: false, kind: "too-large" };
+    }
+    const base = normalizeServerUrl(this.deps.serverUrl);
+    if (size <= WHOLE_FILE_MAX) {
+      const resp = await requestUrl({
+        url: base + "/api/upload/replace",
+        method: "POST",
+        contentType: "application/octet-stream",
+        headers: {
+          Authorization: `Bearer ${this.deps.pat}`,
+          "X-Docli-Workspace": this.deps.workspaceId,
+          "X-Docli-Node-Id": nodeId,
+          "X-Docli-Base-Generation": String(baseGeneration),
+          "X-Docli-Sha256": sha256,
+        },
+        body: toArrayBuffer(bytes),
+        throw: false,
+      });
+      return parsePutBlobResponse(resp.status, safeJson(resp));
+    }
+    return this.putBlobChunked(nodeId, baseGeneration, sha256, bytes);
+  }
 
-  const first = await requestUrl({
-    url,
-    method: "GET",
-    headers: { ...auth, Range: `bytes=0-${DOWNLOAD_CHUNK - 1}` },
-    throw: false,
-  });
-  let body: ArrayBuffer;
-  if (first.status === 200) {
-    body = first.arrayBuffer;
-  } else if (first.status === 206) {
+  private async putBlobChunked(
+    nodeId: string,
+    baseGeneration: number,
+    sha256: string,
+    bytes: Uint8Array,
+  ): Promise<BlobPutResult> {
+    const base = normalizeServerUrl(this.deps.serverUrl);
+    const auth = { Authorization: `Bearer ${this.deps.pat}` };
+
+    const uploadId = uploadIdFor(`replace:${nodeId}:${baseGeneration}:${sha256}`);
+    const init = await requestUrl({
+      url: base + "/api/upload/chunk/init",
+      method: "POST",
+      contentType: "application/json",
+      headers: auth,
+      body: JSON.stringify({
+        workspaceId: this.deps.workspaceId,
+        uploadId,
+        path: `replace-${nodeId}.bin`,
+        totalBytes: bytes.byteLength,
+        targetNodeId: nodeId,
+        expectedGeneration: baseGeneration,
+        sha256,
+      }),
+      throw: false,
+    });
+    if (init.status !== 200) return { ok: false, kind: "failed", detail: `init ${init.status}` };
+    let received = Number((safeJson(init) as { receivedBytes?: string })?.receivedBytes ?? 0);
+    while (received < bytes.byteLength) {
+      const end = Math.min(received + CHUNK_SIZE, bytes.byteLength);
+      const resp = await requestUrl({
+        url: base + "/api/upload/chunk/append",
+        method: "POST",
+        contentType: "application/octet-stream",
+        headers: {
+          ...auth,
+          "X-Docli-Workspace": this.deps.workspaceId,
+          "X-Docli-Upload-Id": uploadId,
+          "X-Docli-Offset": String(received),
+        },
+        body: toArrayBuffer(bytes.slice(received, end)),
+        throw: false,
+      });
+      if (resp.status !== 200) return { ok: false, kind: "failed", detail: `append ${resp.status}` };
+      const next = Number((safeJson(resp) as { receivedBytes?: string })?.receivedBytes ?? received);
+      if (next <= received) return { ok: false, kind: "failed", detail: "no progress" };
+      received = next;
+    }
+    const done = await requestUrl({
+      url: base + "/api/upload/chunk/complete",
+      method: "POST",
+      contentType: "application/json",
+      headers: auth,
+      body: JSON.stringify({ workspaceId: this.deps.workspaceId, uploadId }),
+      throw: false,
+    });
+    return parsePutBlobResponse(done.status, safeJson(done));
+  }
+
+  async download(nodeId: string, blobUrl: string | null): Promise<{ bytes: Uint8Array } | "failed"> {
+
+    try {
+      return await this.downloadInner(nodeId, blobUrl);
+    } catch {
+      return "failed";
+    }
+  }
+
+  private async downloadInner(
+    nodeId: string,
+    blobUrl: string | null,
+  ): Promise<{ bytes: Uint8Array } | "failed"> {
+    const rel = blobUrl ?? `/api/attachments/${nodeId}`;
+    const url = normalizeServerUrl(this.deps.serverUrl) + rel;
+    const auth = { Authorization: `Bearer ${this.deps.pat}` };
+    const first = await requestUrl({
+      url,
+      method: "GET",
+      headers: { ...auth, Range: `bytes=0-${DOWNLOAD_CHUNK - 1}` },
+      throw: false,
+    });
+    if (first.status === 200) return { bytes: new Uint8Array(first.arrayBuffer) };
+    if (first.status !== 206) return "failed";
     const total = totalFromContentRange(first.headers?.["content-range"]);
     const parts: Uint8Array[] = [new Uint8Array(first.arrayBuffer)];
     let offset = first.arrayBuffer.byteLength;
@@ -205,27 +229,139 @@ export async function downloadAttachment(
         headers: { ...auth, Range: `bytes=${offset}-${end}` },
         throw: false,
       });
-      if (resp.status !== 206 && resp.status !== 200) return false;
+      if (resp.status !== 206 && resp.status !== 200) return "failed";
       const part = new Uint8Array(resp.arrayBuffer);
       if (part.length === 0) break;
       parts.push(part);
       offset += part.length;
     }
-    body = toArrayBuffer(concat(parts));
-  } else {
-    return false;
+    return { bytes: concat(parts) };
   }
 
-  const dir = dirOf(p);
-  if (dir && !deps.app.vault.getAbstractFileByPath(dir)) {
+  async uploadNew(
+    path: string,
+    bytes: Uint8Array,
+  ): Promise<{ id: string; generation: number; sha256: string } | "failed" | "skipped-large"> {
     try {
-      await deps.app.vault.createFolder(dir);
+      return await this.uploadNewInner(path, bytes);
     } catch {
-       /* noop */
+      return "failed";
     }
   }
-  await deps.app.vault.createBinary(p, body);
-  return true;
+
+  private async uploadNewInner(
+    path: string,
+    bytes: Uint8Array,
+  ): Promise<{ id: string; generation: number; sha256: string } | "failed" | "skipped-large"> {
+    const size = bytes.byteLength;
+    if (size > this.deps.maxBytes || size > SERVER_CHUNK_MAX) return "skipped-large";
+    const name = path.slice(path.lastIndexOf("/") + 1);
+    const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
+    const digest = sha256Hex(bytes);
+    let status: number;
+    let json: unknown;
+    if (size <= WHOLE_FILE_MAX) {
+      const { body, contentType } = buildMultipart(
+        { workspace_id: this.deps.workspaceId, path },
+        { name, mime: mimeForExt(ext), bytes: toArrayBuffer(bytes) },
+      );
+      const resp = await requestUrl({
+        url: normalizeServerUrl(this.deps.serverUrl) + "/api/upload",
+        method: "POST",
+        contentType,
+        headers: { Authorization: `Bearer ${this.deps.pat}` },
+        body,
+        throw: false,
+      });
+      status = resp.status;
+      json = safeJson(resp);
+    } else {
+      const res = await chunkedCreate(this.deps, path, bytes, digest);
+      if (res === null) return "failed";
+      status = res.status;
+      json = res.json;
+    }
+    if (status !== 200) return "failed";
+    const id = (json as { id?: string })?.id;
+    if (!id) return "failed";
+
+    const serverPath = (json as { path?: string })?.path;
+    return { id, generation: 0, sha256: digest, ...(serverPath ? { path: serverPath } : {}) };
+  }
+}
+
+function parsePutBlobResponse(status: number, json: unknown): BlobPutResult {
+  const j = (json ?? {}) as {
+    code?: string;
+    generation?: number;
+    sha256?: string | null;
+    divergence?: string;
+  };
+  if (status === 200) {
+    return { ok: true, generation: Number(j.generation ?? 0), sha256: String(j.sha256 ?? "") };
+  }
+  if (status === 409 && j.code === "GENERATION_CONFLICT") {
+    const d = j.divergence;
+    return {
+      ok: false,
+      kind: "conflict",
+      generation: Number(j.generation ?? 0),
+      sha256: j.sha256 ?? null,
+      divergence: d === "current-match" || d === "displaced-match" ? d : "unknown",
+    };
+  }
+  return { ok: false, kind: "failed", detail: `${status}${j.code ? ` ${j.code}` : ""}` };
+}
+
+async function chunkedCreate(
+  deps: AttachmentDeps,
+  path: string,
+  bytes: Uint8Array,
+  sha256: string,
+): Promise<{ status: number; json: unknown } | null> {
+  const base = normalizeServerUrl(deps.serverUrl);
+  const auth = { Authorization: `Bearer ${deps.pat}` };
+
+  const uploadId = uploadIdFor(`${deps.workspaceId}:${path}:${bytes.byteLength}:${sha256}`);
+  const init = await requestUrl({
+    url: base + "/api/upload/chunk/init",
+    method: "POST",
+    contentType: "application/json",
+    headers: auth,
+    body: JSON.stringify({ workspaceId: deps.workspaceId, uploadId, path, totalBytes: bytes.byteLength, sha256 }),
+    throw: false,
+  });
+  if (init.status !== 200) return null;
+  let received = Number((safeJson(init) as { receivedBytes?: string })?.receivedBytes ?? 0);
+  while (received < bytes.byteLength) {
+    const end = Math.min(received + CHUNK_SIZE, bytes.byteLength);
+    const resp = await requestUrl({
+      url: base + "/api/upload/chunk/append",
+      method: "POST",
+      contentType: "application/octet-stream",
+      headers: {
+        ...auth,
+        "X-Docli-Workspace": deps.workspaceId,
+        "X-Docli-Upload-Id": uploadId,
+        "X-Docli-Offset": String(received),
+      },
+      body: toArrayBuffer(bytes.slice(received, end)),
+      throw: false,
+    });
+    if (resp.status !== 200) return null;
+    const next = Number((safeJson(resp) as { receivedBytes?: string })?.receivedBytes ?? received);
+    if (next <= received) return null;
+    received = next;
+  }
+  const done = await requestUrl({
+    url: base + "/api/upload/chunk/complete",
+    method: "POST",
+    contentType: "application/json",
+    headers: auth,
+    body: JSON.stringify({ workspaceId: deps.workspaceId, uploadId }),
+    throw: false,
+  });
+  return { status: done.status, json: safeJson(done) };
 }
 
 function totalFromContentRange(value: string | undefined): number | null {
@@ -236,20 +372,12 @@ function totalFromContentRange(value: string | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function contentFingerprint(bytes: ArrayBuffer): string {
-  const u8 = new Uint8Array(bytes);
-  const n = u8.length;
-  const SAMPLE = 64 * 1024;
-  let h = 0x811c9dc5;
-  const mix = (b: number) => {
-    h ^= b;
-    h = Math.imul(h, 0x01000193);
-  };
-  const head = Math.min(SAMPLE, n);
-  for (let i = 0; i < head; i++) mix(u8[i]);
-  for (let i = Math.max(head, n - SAMPLE); i < n; i++) mix(u8[i]);
-  for (let s = n; s > 0; s = Math.floor(s / 256)) mix(s & 0xff);
-  return (h >>> 0).toString(16);
+function safeJson(resp: { json: unknown }): unknown {
+  try {
+    return resp.json;
+  } catch {
+    return null;
+  }
 }
 
 function uploadIdFor(key: string): string {

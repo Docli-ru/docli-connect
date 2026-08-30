@@ -8,3 +8,6 @@ export { withRetry, type RetryOptions } from "./retry.js";
 export { mapLimit } from "./pool.js";
 export { siblingPath, folderScope, isScopeWiden } from "./paths.js";
 export { naturalCmp } from "./order.js";
+export { sha256Hex } from "./sha256.js";
+export { syncAttachmentBytes, EMPTY_SHA256, type AttachmentNotice, type AttachmentSyncOpts, type BlobPort, type BlobPutResult, } from "./attachmentSync.js";
+export { isNoteName, ackFrontier, MAX_QUARANTINE } from "./quarantine.js";
