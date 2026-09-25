@@ -18,7 +18,7 @@ enter `Docli-ru/docli-connect`. BRAT keeps it updated ahead of the store release
 
 ### Manual
 
-1. Download `main.js`, `manifest.json`, and `versions.json` from the
+1. Download `main.js`, `manifest.json`, and `styles.css` from the
    [latest release](https://github.com/Docli-ru/docli-connect/releases/latest).
 2. Copy them into `<your vault>/.obsidian/plugins/docli-connect/`.
 3. Reload Obsidian (or **Settings → Community plugins → Reload**) and enable **Docli Connect**.
@@ -27,15 +27,31 @@ enter `Docli-ru/docli-connect`. BRAT keeps it updated ahead of the store release
 
 Open **Settings → Docli Connect**:
 
-1. **Server URL** — `https://docli.ru` (or your own docli server). HTTPS is required on mobile.
-2. **Access token** — create a personal access token in docli under **Account → Tokens** and paste it.
-3. **Connect** — verifies the token and lists your workspaces.
-4. **Workspace** — pick the space this vault should sync with. *Picking does not start syncing.*
-5. **Lock & sync** — confirm the prompt to pair this vault with the chosen workspace and start syncing
-   both ways. This step exists so you can't merge a vault into the wrong space by accident.
+1. **Sign in to docli** — approve access in your browser and return to Obsidian. Your workspaces load automatically.
+2. **Workspace** — choose the space for this vault. Choosing does not start syncing.
+3. **Start syncing** — confirm the first-sync explanation to begin two-way sync.
 
-To stop, **Unlock** — that pauses syncing and lets you choose a different workspace. The status bar
-shows a small indicator: 🟢 live, 🟡 polling, 🔴 error, ⏸️ paused (unlocked).
+**Sync preferences** contains folders, attachment limits, schedule and conflict details.
+For a custom server or PAT, expand **Server and access token**. HTTPS is required on mobile;
+existing PAT connections keep working after upgrade.
+
+**Pause and change workspace** stops syncing so you can choose another space.
+The status bar shows 🟢 live, 🟡 polling, 🔴 error, or ⏸️ paused.
+
+Closing settings before choosing a workspace keeps you signed in, with sync off. Click **docli · Finish setup** in the status bar, or run **Open sync settings** from the command palette, to continue. If authorization later expires, the status changes to **docli · Sign in again**. A non-blocking reminder appears at most every 10 minutes while setup or sign-in needs attention, Obsidian is active, and settings are closed. **Don’t remind me again** disables connection reminders across restarts; re-enable them under **Server and access token**. Choosing a workspace or signing in again stops the corresponding reminder.
+
+The sync status shows the current mode: real-time, syncing, periodic fallback, or an error. **Check now** is optional when real-time sync is on; the last successful completion appears separately.
+
+Sign out pauses and drains sync, clears local credentials, and attempts to revoke the OAuth
+connection. If offline, revoke it later through **Account → Connections**. Local notes and sync
+history stay in place. Changing the server or credentials requires selecting a workspace again.
+OAuth credentials live in Obsidian SecretStorage for this vault; this is not an OS keychain and
+other plugins can access that storage. An interrupted token rotation may require a fresh sign-in.
+
+New installs allow attachments up to **50 MiB** by default. Saved limits (including 15 MiB) are
+preserved; use **Reset to 50 MiB** to change them. Files above 25 MiB use 8 MiB upload chunks;
+custom limits up to the server's 200 MiB chunked maximum remain supported. Reading a vault file
+still buffers it in memory. This release does not introduce paid per-file ceilings.
 
 ## How it works
 

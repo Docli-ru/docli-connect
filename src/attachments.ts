@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { requestUrl, type App } from "obsidian";
+import type { App } from "obsidian";
+import { authRequest } from "./authRequest.js";
+import type { Credential } from "./auth.js";
 import { sha256Hex, type BlobPort, type BlobPutResult } from "./sync-client/index.js";
 import { normalizeServerUrl } from "./settings.js";
 
@@ -80,7 +82,7 @@ export function buildMultipart(
 export interface AttachmentDeps {
   app: App;
   serverUrl: string;
-  pat: string;
+  pat: Credential;
   workspaceId: string;
 
   maxBytes: number;
@@ -116,12 +118,11 @@ export class RequestUrlBlobPort implements BlobPort {
     }
     const base = normalizeServerUrl(this.deps.serverUrl);
     if (size <= WHOLE_FILE_MAX) {
-      const resp = await requestUrl({
+      const resp = await authRequest(this.deps.pat, {
         url: base + "/api/upload/replace",
         method: "POST",
         contentType: "application/octet-stream",
         headers: {
-          Authorization: `Bearer ${this.deps.pat}`,
           "X-Docli-Workspace": this.deps.workspaceId,
           "X-Docli-Node-Id": nodeId,
           "X-Docli-Base-Generation": String(baseGeneration),
@@ -142,14 +143,13 @@ export class RequestUrlBlobPort implements BlobPort {
     bytes: Uint8Array,
   ): Promise<BlobPutResult> {
     const base = normalizeServerUrl(this.deps.serverUrl);
-    const auth = { Authorization: `Bearer ${this.deps.pat}` };
 
     const uploadId = uploadIdFor(`replace:${nodeId}:${baseGeneration}:${sha256}`);
-    const init = await requestUrl({
+    const init = await authRequest(this.deps.pat, {
       url: base + "/api/upload/chunk/init",
       method: "POST",
       contentType: "application/json",
-      headers: auth,
+      headers: {},
       body: JSON.stringify({
         workspaceId: this.deps.workspaceId,
         uploadId,
@@ -165,12 +165,11 @@ export class RequestUrlBlobPort implements BlobPort {
     let received = Number((safeJson(init) as { receivedBytes?: string })?.receivedBytes ?? 0);
     while (received < bytes.byteLength) {
       const end = Math.min(received + CHUNK_SIZE, bytes.byteLength);
-      const resp = await requestUrl({
+      const resp = await authRequest(this.deps.pat, {
         url: base + "/api/upload/chunk/append",
         method: "POST",
         contentType: "application/octet-stream",
         headers: {
-          ...auth,
           "X-Docli-Workspace": this.deps.workspaceId,
           "X-Docli-Upload-Id": uploadId,
           "X-Docli-Offset": String(received),
@@ -183,11 +182,11 @@ export class RequestUrlBlobPort implements BlobPort {
       if (next <= received) return { ok: false, kind: "failed", detail: "no progress" };
       received = next;
     }
-    const done = await requestUrl({
+    const done = await authRequest(this.deps.pat, {
       url: base + "/api/upload/chunk/complete",
       method: "POST",
       contentType: "application/json",
-      headers: auth,
+      headers: {},
       body: JSON.stringify({ workspaceId: this.deps.workspaceId, uploadId }),
       throw: false,
     });
@@ -209,11 +208,10 @@ export class RequestUrlBlobPort implements BlobPort {
   ): Promise<{ bytes: Uint8Array } | "failed"> {
     const rel = blobUrl ?? `/api/attachments/${nodeId}`;
     const url = normalizeServerUrl(this.deps.serverUrl) + rel;
-    const auth = { Authorization: `Bearer ${this.deps.pat}` };
-    const first = await requestUrl({
+    const first = await authRequest(this.deps.pat, {
       url,
       method: "GET",
-      headers: { ...auth, Range: `bytes=0-${DOWNLOAD_CHUNK - 1}` },
+      headers: { Range: `bytes=0-${DOWNLOAD_CHUNK - 1}` },
       throw: false,
     });
     if (first.status === 200) return { bytes: new Uint8Array(first.arrayBuffer) };
@@ -223,10 +221,10 @@ export class RequestUrlBlobPort implements BlobPort {
     let offset = first.arrayBuffer.byteLength;
     while (total !== null && offset < total) {
       const end = Math.min(offset + DOWNLOAD_CHUNK, total) - 1;
-      const resp = await requestUrl({
+      const resp = await authRequest(this.deps.pat, {
         url,
         method: "GET",
-        headers: { ...auth, Range: `bytes=${offset}-${end}` },
+        headers: { Range: `bytes=${offset}-${end}` },
         throw: false,
       });
       if (resp.status !== 206 && resp.status !== 200) return "failed";
@@ -265,11 +263,11 @@ export class RequestUrlBlobPort implements BlobPort {
         { workspace_id: this.deps.workspaceId, path },
         { name, mime: mimeForExt(ext), bytes: toArrayBuffer(bytes) },
       );
-      const resp = await requestUrl({
+      const resp = await authRequest(this.deps.pat, {
         url: normalizeServerUrl(this.deps.serverUrl) + "/api/upload",
         method: "POST",
         contentType,
-        headers: { Authorization: `Bearer ${this.deps.pat}` },
+        headers: {},
         body,
         throw: false,
       });
@@ -320,14 +318,13 @@ async function chunkedCreate(
   sha256: string,
 ): Promise<{ status: number; json: unknown } | null> {
   const base = normalizeServerUrl(deps.serverUrl);
-  const auth = { Authorization: `Bearer ${deps.pat}` };
 
   const uploadId = uploadIdFor(`${deps.workspaceId}:${path}:${bytes.byteLength}:${sha256}`);
-  const init = await requestUrl({
+  const init = await authRequest(deps.pat, {
     url: base + "/api/upload/chunk/init",
     method: "POST",
     contentType: "application/json",
-    headers: auth,
+    headers: {},
     body: JSON.stringify({ workspaceId: deps.workspaceId, uploadId, path, totalBytes: bytes.byteLength, sha256 }),
     throw: false,
   });
@@ -335,12 +332,11 @@ async function chunkedCreate(
   let received = Number((safeJson(init) as { receivedBytes?: string })?.receivedBytes ?? 0);
   while (received < bytes.byteLength) {
     const end = Math.min(received + CHUNK_SIZE, bytes.byteLength);
-    const resp = await requestUrl({
+    const resp = await authRequest(deps.pat, {
       url: base + "/api/upload/chunk/append",
       method: "POST",
       contentType: "application/octet-stream",
       headers: {
-        ...auth,
         "X-Docli-Workspace": deps.workspaceId,
         "X-Docli-Upload-Id": uploadId,
         "X-Docli-Offset": String(received),
@@ -353,11 +349,11 @@ async function chunkedCreate(
     if (next <= received) return null;
     received = next;
   }
-  const done = await requestUrl({
+  const done = await authRequest(deps.pat, {
     url: base + "/api/upload/chunk/complete",
     method: "POST",
     contentType: "application/json",
-    headers: auth,
+    headers: {},
     body: JSON.stringify({ workspaceId: deps.workspaceId, uploadId }),
     throw: false,
   });

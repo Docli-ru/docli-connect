@@ -6,7 +6,7 @@ export const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 export function emptyState() {
     return { epoch: 1, cursor: { rev: 0, id: NIL_UUID }, lastMutationId: 0, byPath: {} };
 }
-export const RESERVED_SEGMENTS = [".obsidian", ".trash", ".git"];
+export const RESERVED_SEGMENTS = [".obsidian", ".trash", ".git", ".docli"];
 export function hasReservedSegment(path) {
     return path.split("/").some((seg) => RESERVED_SEGMENTS.includes(seg.toLowerCase()));
 }

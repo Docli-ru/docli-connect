@@ -47,6 +47,7 @@ export class IndexedDbKv implements KvStore {
       tx.objectStore(STORE).put(value, key);
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error ?? new Error("IndexedDB transaction failed"));
+      tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
     });
   }
 }
@@ -74,15 +75,14 @@ export class PendingDeletesStore {
     }
   }
 
-  save(paths: string[]): Promise<void> {
+  save(paths: string[], required = false): Promise<void> {
     const snapshot = JSON.stringify([...new Set(paths)]);
-    this.chain = this.chain
-      .then(() => this.kv.set(this.key, snapshot))
-      .catch((e) => {
+    const write = this.chain.then(() => this.kv.set(this.key, snapshot));
+    this.chain = write.catch((e) => {
 
         console.error("docli: pending-delete store write failed", e);
       });
-    return this.chain;
+    return required ? write : this.chain;
   }
 
   flush(): Promise<void> {
@@ -142,14 +142,13 @@ export class PendingReordersStore {
     }
   }
 
-  save(ops: Array<{ nodeId: string; beforeId: string | null; afterId: string | null }>): Promise<void> {
+  save(ops: Array<{ nodeId: string; beforeId: string | null; afterId: string | null }>, required = false): Promise<void> {
     const snapshot = JSON.stringify(ops);
-    this.chain = this.chain
-      .then(() => this.kv.set(this.key, snapshot))
-      .catch((e) => {
+    const write = this.chain.then(() => this.kv.set(this.key, snapshot));
+    this.chain = write.catch((e) => {
         console.error("docli: pending-reorder store write failed", e);
       });
-    return this.chain;
+    return required ? write : this.chain;
   }
 
   flush(): Promise<void> {

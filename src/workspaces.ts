@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { requestUrl } from "obsidian";
+import { authRequest } from "./authRequest.js";
+import type { Credential } from "./auth.js";
 import { normalizeServerUrl } from "./settings.js";
 import { t } from "./i18n.js";
 
@@ -13,12 +14,11 @@ export interface WorkspaceRef {
 
 const QUERY = `query { viewer { workspaces { id handle name } } }`;
 
-export async function fetchWorkspaces(serverUrl: string, pat: string): Promise<WorkspaceRef[]> {
-  const resp = await requestUrl({
+export async function fetchWorkspaces(serverUrl: string, pat: Credential): Promise<WorkspaceRef[]> {
+  const resp = await authRequest(pat, {
     url: normalizeServerUrl(serverUrl) + "/api/graphql",
     method: "POST",
     contentType: "application/json",
-    headers: { Authorization: `Bearer ${pat}` },
     body: JSON.stringify({ query: QUERY }),
     throw: false,
   });

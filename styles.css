@@ -58,3 +58,14 @@
 .docli-order-indicator.is-active {
   display: block;
 }
+
+/* Compact setup caution: visible without overwhelming the next action. */
+.docli-safety-note {
+  border-inline-start: 3px solid var(--text-warning, #d9a441);
+  padding-inline-start: 12px;
+}
+.docli-safety-note .setting-item-name {
+  color: var(--text-warning, #d9a441);
+}
+
+.docli-setup-reminder-actions { display: flex; flex-wrap: wrap; gap: 8px; }

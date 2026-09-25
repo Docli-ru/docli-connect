@@ -3,7 +3,7 @@
 
 const ILLEGAL = new Set(['<', '>', ':', '"', '|', '?', '*', '\\']);
 
-const DEVICE = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\.|$)/i;
+const DEVICE = /^(CON|PRN|AUX|NUL|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3])(\.|$)/i;
 
 function hex(ch: string): string {
   return "%" + ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0");

@@ -1,292 +1,274 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
-
-import { PluginSettingTab, Setting, Notice, type App } from "obsidian";
+import { PluginSettingTab, Setting, Notice, requireApiVersion, type App, type ButtonComponent, type SettingDefinition } from "obsidian";
 import type DocliPlugin from "./main.js";
-import { normalizeServerUrl } from "./settings.js";
-import { fetchWorkspaces, type WorkspaceRef } from "./workspaces.js";
+import type { WorkspaceRef } from "./workspaces.js";
 import { ConfirmModal } from "./confirmModal.js";
-import { plural, t } from "./i18n.js";
+import { t } from "./i18n.js";
 
 export class DocliSettingTab extends PluginSettingTab {
   private workspaces: WorkspaceRef[] = [];
-
+  private workspaceGeneration = -1;
   private shown = false;
-
-  constructor(
-    app: App,
-    private readonly plugin: DocliPlugin,
-  ) {
-    super(app, plugin);
-  }
-
-  hide(): void {
-    this.shown = false;
-  }
-
+  private connectionOptions = false;
+  private syncOptions = false;
+  private loadingWorkspaces = false;
+  private discoveryAttempt = -1;
+  private discoveryFailed = false;
+  private busy = false;
+  private connectionSetting: Setting | null = null;
+  private connectionButton: ButtonComponent | null = null;
+  private syncSetting: Setting | null = null;
+  private syncButton: ButtonComponent | null = null;
+  constructor(app: App, private readonly plugin: DocliPlugin) { super(app, plugin); }
+  get isVisible(): boolean { return Boolean(this.containerEl?.isShown()); }
+  hide(): void { this.shown = false; this.connectionSetting = null; this.connectionButton = null; this.syncSetting = null; this.syncButton = null; }
   refreshIfOpen(): void {
-    if (this.shown) this.display();
+    if (requireApiVersion("1.13.0")) this.update();
+    else if (this.shown) this.renderLegacy();
   }
 
-  display(): void {
+  refreshSyncStatus(): void {
+    this.refreshConnectionStatus();
+    const row = this.syncSetting;
+    if (!row?.settingEl.isConnected) return;
+    const p = this.plugin;
+    const mode = p.syncMode;
+    const last = p.settings.lastSyncAt ? " " + t("settings.syncNow.descLast", {
+      time: new Date(p.settings.lastSyncAt).toLocaleString(),
+    }) : "";
+    row.setName(t(`sync.${mode}.title`));
+    row.setDesc(t(`sync.${mode}.desc`, { seconds: Math.max(30, p.settings.syncIntervalSecs) }) + last);
+    this.syncButton?.setDisabled(!p.canSync() || mode === "syncing" || mode === "update");
+  }
+
+  private refreshConnectionStatus(): void {
+    const row = this.connectionSetting;
+    const button = this.connectionButton;
+    if (!row?.settingEl.isConnected || !button) return;
+    const p = this.plugin;
+    const pending = p.signInPending;
+    const connected = p.authenticated();
+    row.setName(t(connected && !pending ? "auth.method" : "auth.signIn"));
+    row.setDesc(pending ? t("ux.waiting") : connected ?
+      (p.settings.authMode === "oauth" && p.auth?.status === "offline" ? t("auth.offline") : t("ux.signedIn")) : t("ux.signInHelp"));
+    button.setButtonText(t(pending ? "auth.cancel" : connected ? "auth.signOut" : "auth.signIn"));
+    button.setDisabled(!pending && (this.busy || p.changingConnection || this.loadingWorkspaces));
+    button.buttonEl.toggleClass("mod-cta", !connected && !pending);
+  }
+
+  private action(work: () => Promise<void>): void {
+    if (this.busy) return;
+    this.busy = true;
+    this.refreshIfOpen();
+    void work().catch(() => new Notice(t("ux.actionFailed"))).finally(() => {
+      this.busy = false;
+      this.refreshIfOpen();
+    });
+  }
+
+  private async loadWorkspaces(): Promise<void> {
+    const p = this.plugin;
+    if (this.loadingWorkspaces || !p.authenticated() || p.changingConnection) return;
+    const generation = p.connectionGeneration;
+    this.discoveryAttempt = generation;
+    this.loadingWorkspaces = true;
+    this.discoveryFailed = false;
+    this.refreshIfOpen();
+    try {
+      const spaces = await p.discoverWorkspaces();
+      if (generation !== p.connectionGeneration) return;
+      this.workspaces = spaces;
+      this.workspaceGeneration = generation;
+    } catch {
+      if (generation === p.connectionGeneration) this.discoveryFailed = true;
+    } finally {
+      this.loadingWorkspaces = false;
+      this.refreshIfOpen();
+    }
+  }
+
+  getSettingDefinitions(): SettingDefinition[] {
+    const p = this.plugin;
+    const s = p.settings;
+    const row = (name: string, desc: string, render: (setting: Setting) => void): SettingDefinition => ({ name, desc, render });
+    const defs: SettingDefinition[] = [];
+    if (p.upgradeRequired) defs.push(row(t("settings.notice.upgrade.title"),
+      p.upgradeInfo?.minVersion ? t("settings.notice.outdated.body", {
+        clientVersion: p.upgradeInfo.clientVersion ?? p.manifest.version, minVersion: p.upgradeInfo.minVersion,
+      }) : t("settings.notice.upgrade.body"), (r) => r.settingEl.addClass("docli-notice")));
+    if (s.featuresNeedingUpdate) defs.push(row(t("settings.notice.features.title"),
+      t("settings.notice.features.body", { features: s.featuresNeedingUpdate }), () => {}));
+    const connected = p.authenticated();
+    const pending = p.signInPending;
+    const disabled = this.busy || p.changingConnection || this.loadingWorkspaces;
+    defs.push(row(t(connected && !pending ? "auth.method" : "auth.signIn"), pending ? t("ux.waiting") : connected ?
+      (s.authMode === "oauth" && p.auth?.status === "offline" ? t("auth.offline") : t("ux.signedIn")) : t("ux.signInHelp"), (r) => {
+      this.connectionSetting = r;
+      r.addButton((b) => {
+        this.connectionButton = b;
+        b.onClick(() => {
+          if (p.signInPending) { p.cancelSignIn(); this.refreshIfOpen(); }
+          else this.action(() => p.authenticated() ? p.signOut() : p.beginSignIn());
+        });
+      });
+      this.refreshConnectionStatus();
+    }));
+    defs[defs.length - 1].aliases = [t("auth.signIn")];
+    if (!s.locked) defs.push({ name: t("ux.beforeSync"), desc: t("ux.safety"), searchable: false, render: (r) => r.settingEl.addClass("docli-safety-note") });
+    if (connected && !s.locked && (this.workspaceGeneration !== p.connectionGeneration || !this.workspaces.length)) {
+      defs.push(row(t("settings.workspace.name"), this.loadingWorkspaces ? t("ux.loading") :
+        this.discoveryFailed ? t("ux.loadFailed") : this.workspaceGeneration === p.connectionGeneration && !this.workspaces.length ?
+          t("notice.noWorkspaces") : t("ux.chooseHelp"), (r) => {
+        if (this.discoveryAttempt !== p.connectionGeneration && !p.changingConnection) {
+          queueMicrotask(() => { void this.loadWorkspaces(); });
+        }
+        if (this.discoveryFailed || (this.workspaceGeneration === p.connectionGeneration && !this.workspaces.length)) {
+          r.addButton((b) => b.setButtonText(t("ux.retry")).setDisabled(this.loadingWorkspaces || disabled)
+            .onClick(() => { void this.loadWorkspaces(); }));
+        }
+      }));
+    }
+    const workspaces = this.workspaceGeneration === p.connectionGeneration ? this.workspaces : [];
+    if (connected && (workspaces.length || s.workspaceHandle)) {
+      if (!s.locked) defs.push(row(t("settings.workspace.name"), t(s.locked ? "settings.workspace.descLocked" : "settings.workspace.descUnlocked"), (r) => {
+        r.addDropdown((d) => {
+          d.addOption("", t("ux.choose"));
+          const options = workspaces.length ? workspaces : [{ id: s.workspaceId, handle: s.workspaceHandle, name: s.workspaceHandle }];
+          for (const w of options) d.addOption(w.handle, `${w.name} (@${w.handle})`);
+          d.setValue(s.workspaceHandle).setDisabled(s.locked || disabled).onChange((handle) => this.action(async () => {
+            const w = workspaces.find((x) => x.handle === handle);
+            if (!w || s.locked) return;
+            const generation = p.connectionGeneration;
+            await p.changeConnection(async () => {
+              if (s.locked || !p.authenticated() || p.connectionGeneration !== generation + 1) return;
+              s.workspaceId = w.id; s.workspaceHandle = w.handle;
+              p.resetPendingDeletes();
+            });
+          }));
+        });
+      }));
+      if (s.workspaceId) defs.push(row(t(s.locked ? "settings.workspace.name" : "settings.lock.nameUnlocked"),
+        (s.locked ? `@${s.workspaceHandle}. ` : "") + t(s.locked ? "settings.lock.descLocked" : "settings.lock.descUnlocked"), (r) => {
+          r.addButton((b) => {
+            if (s.locked) b.setButtonText(t("settings.lock.unlock")).setDisabled(disabled).onClick(() => this.action(async () => {
+              await p.changeConnection(async () => { s.locked = false; p.clearUpgradeNotice(); });
+              new Notice(t("notice.unlocked"));
+            }));
+            else b.setButtonText(t("settings.lock.lockAndSync")).setCta().setDisabled(!s.workspaceId || disabled).onClick(() => {
+              if (!s.workspaceId) { new Notice(t("notice.pickWorkspace")); return; }
+              const generation = p.connectionGeneration;
+              const handle = s.workspaceHandle;
+              const workspaceId = s.workspaceId;
+              new ConfirmModal(this.app, { title: t("modal.lock.title"),
+                body: [t("modal.lock.body1", { handle }), t("modal.lock.body2"), t("modal.lock.body3")],
+                confirmText: t("modal.lock.confirm"), warning: true, onConfirm: async () => {
+                  if (generation !== p.connectionGeneration || !p.authenticated()) return;
+                  let locked = false;
+                  await p.changeConnection(async () => {
+                    if (p.connectionGeneration !== generation + 1 || !p.authenticated() ||
+                        s.workspaceId !== workspaceId || s.workspaceHandle !== handle) return;
+                    s.locked = true; s.needsBootstrap = true; locked = true;
+                  });
+                  if (!locked || p.connectionGeneration !== generation + 1) return;
+                  void p.runSync(true);
+                  new Notice(t("notice.locked"));
+                },
+              }).open();
+            });
+          });
+        }));
+    }
+    if (connected && s.locked) defs.push(row(t("ux.syncStatus"), t("sync.live.desc"), (r) => {
+      this.syncSetting = r;
+      r.addButton((b) => {
+        this.syncButton = b;
+        b.setButtonText(t("settings.syncNow.button")).onClick(() => void p.runSync(true));
+      });
+      this.refreshSyncStatus();
+    }));
+    if (connected) {
+      defs.push(row(t("ux.syncOptions"), t("ux.syncOptionsHelp"), (r) => {
+        r.addButton((b) => b.setButtonText(t(this.syncOptions ? "ux.hide" : "ux.change")).setDisabled(disabled)
+          .onClick(() => { this.syncOptions = !this.syncOptions; this.refreshIfOpen(); }));
+      }));
+      defs[defs.length - 1].aliases = [t("settings.interval.name"), t("settings.maxAttachment.name"), t("settings.folders.name"), t("settings.mirror.name"), t("settings.conflicts.title"), t("settings.moves.title")];
+      if (this.syncOptions) {
+    defs.push(row(t("settings.interval.name"), t("settings.interval.desc"), (r) => {
+      let value = String(s.syncIntervalSecs);
+      r.addText((c) => c.setDisabled(disabled).setValue(value).onChange((v) => { value = v; }));
+      r.addButton((b) => b.setButtonText(t("auth.save")).setDisabled(disabled).onClick(() => this.action(async () => {
+        const n = Number.parseInt(value, 10); s.syncIntervalSecs = Number.isFinite(n) && n >= 0 ? n : 0;
+        await p.saveSettings(); p.scheduleInterval();
+      })));
+    }));
+    defs.push(row(t("settings.maxAttachment.name"), t("settings.maxAttachment.desc"), (r) => {
+      let value = String(s.maxAttachmentMiB);
+      const save = (n: number) => p.changeConnection(async () => { s.maxAttachmentMiB = Number.isFinite(n) && n > 0 ? n : 50; });
+      r.addText((c) => c.setDisabled(disabled).setValue(value).onChange((v) => { value = v; }));
+      r.addButton((b) => b.setButtonText(t("auth.save")).setDisabled(disabled).onClick(() => this.action(() => save(Number.parseInt(value, 10)))));
+      r.addButton((b) => b.setButtonText(t("auth.resetCap")).setDisabled(disabled).onClick(() => this.action(() => save(50))));
+    }));
+    defs.push(row(t("settings.folders.name"), t("settings.folders.desc"), (r) => {
+      let value = s.syncFolders.join("\n");
+      r.addTextArea((c) => {
+        c.setDisabled(disabled).setValue(value).onChange((v) => { value = v; }); c.inputEl.rows = 3;
+      });
+      r.addButton((b) => b.setButtonText(t("auth.save")).setDisabled(disabled).onClick(() => this.action(async () => {
+        await p.changeConnection(async () => {
+          s.syncFolders = value.split("\n").map((line) => line.trim().replace(/^\/+|\/+$/g, "")).filter(Boolean);
+          if (s.syncFolders.length && s.mirrorCustomOrder) { s.mirrorCustomOrder = false; new Notice(t("notice.mirrorDisabledPartial")); }
+        });
+        p.onScopeChanged();
+      })));
+    }));
+    defs.push(row(t("settings.mirror.name"), t(s.syncFolders.length ? "settings.mirror.descPartial" : "settings.mirror.desc"), (r) => {
+      r.addToggle((c) => c.setValue(s.mirrorCustomOrder && !s.syncFolders.length).setDisabled(disabled || Boolean(s.syncFolders.length))
+        .onChange((v) => this.action(async () => { s.mirrorCustomOrder = v; await p.saveSettings(); p.applyExplorerMirror(); })));
+    }));
+    defs.push({ name: t("settings.conflicts.title"), searchable: false, render: (r) => {
+      r.settingEl.empty(); this.renderConflicts(r.settingEl);
+    } });
+    defs.push({ name: t("settings.moves.title"), searchable: false, render: (r) => {
+      r.settingEl.empty(); this.renderSupersededMoves(r.settingEl);
+    } });
+      }
+    }
+    defs.push(row(t("ux.connectionOptions"), t("ux.connectionOptionsHelp"), (r) => {
+      r.addButton((b) => b.setButtonText(t(this.connectionOptions ? "ux.hide" : "ux.change")).setDisabled(disabled)
+        .onClick(() => { this.connectionOptions = !this.connectionOptions; this.refreshIfOpen(); }));
+    }));
+    defs[defs.length - 1].aliases = [t("settings.serverUrl.name"), t("auth.token"), t("setupReminder.setting")];
+    if (this.connectionOptions) {
+      defs.push(row(t("setupReminder.setting"), t("setupReminder.help"), (r) => {
+        r.addToggle((c) => c.setValue(s.setupReminders).setDisabled(disabled)
+          .onChange((enabled) => this.action(() => p.setConnectionReminders(enabled))));
+      }));
+    defs.push(row(t("settings.serverUrl.name"), t("settings.serverUrl.desc"), (r) => {
+      let value = s.serverUrl;
+      r.addText((c) => c.setDisabled(disabled).setValue(value).onChange((v) => { value = v; }));
+      r.addButton((b) => b.setButtonText(t("auth.save")).setDisabled(disabled).onClick(() => this.action(() => p.changeServer(value))));
+    }));
+    defs.push(row(t("auth.token"), t("settings.pat.desc"), (r) => {
+      let value = s.authMode === "pat" ? s.pat : "";
+      r.addText((c) => { c.inputEl.type = "password"; c.setDisabled(disabled).setValue(value).onChange((v) => { value = v; }); });
+      r.addButton((b) => b.setButtonText(t("auth.save")).setDisabled(disabled).onClick(() => this.action(() => p.useToken(value))));
+    }));
+    defs.push({ name: t("auth.secret"), searchable: false });
+    }
+    return defs;
+  }
+
+  display(): void { this.renderLegacy(); }
+
+  private renderLegacy(): void {
     this.shown = true;
-    const { containerEl } = this;
-    containerEl.empty();
-
-    for (const w of [
-      { title: t("settings.warn.experimental.title"), body: t("settings.warn.experimental.body") },
-      { title: t("settings.warn.syncedDisk.title"), body: t("settings.warn.syncedDisk.body") },
-    ]) {
-      const box = containerEl.createDiv({ cls: "docli-warning" });
-      box.createEl("strong", { text: w.title });
-      box.appendText(w.body);
+    this.containerEl.empty();
+    for (const def of this.getSettingDefinitions()) {
+      const setting = new Setting(this.containerEl).setName(def.name);
+      if (def.desc) setting.setDesc(def.desc);
+      if (def.render) def.render(setting, undefined!);
     }
-
-    if (this.plugin.upgradeRequired) {
-      const info = this.plugin.upgradeInfo;
-      const box = containerEl.createDiv({ cls: "docli-notice" });
-      box.createEl("strong", { text: t("settings.notice.upgrade.title") });
-      box.appendText(
-        info?.code === "PLUGIN_OUTDATED" && info.minVersion
-          ? t("settings.notice.outdated.body", {
-              clientVersion: info.clientVersion ?? this.plugin.manifest.version,
-              minVersion: info.minVersion,
-            })
-          : t("settings.notice.upgrade.body"),
-      );
-    }
-
-    if (this.plugin.settings.featuresNeedingUpdate) {
-      const box = containerEl.createDiv({ cls: "docli-notice" });
-      box.createEl("strong", { text: t("settings.notice.features.title") });
-      box.appendText(
-        t("settings.notice.features.body", {
-          features: this.plugin.settings.featuresNeedingUpdate.split(",").join(", "),
-        }),
-      );
-    }
-
-    new Setting(containerEl)
-      .setName(t("settings.serverUrl.name"))
-      .setDesc(t("settings.serverUrl.desc"))
-      .addText((text) =>
-        text
-          .setPlaceholder("https://docli.ru")
-          .setValue(this.plugin.settings.serverUrl)
-          .onChange(async (v) => {
-            this.plugin.settings.serverUrl = normalizeServerUrl(v);
-            await this.plugin.saveSettings();
-            this.plugin.connectNotify();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName(t("settings.pat.name"))
-      .setDesc(t("settings.pat.desc"))
-      .addText((text) => {
-        text.inputEl.type = "password";
-        text
-          .setPlaceholder("docli_pat_…")
-          .setValue(this.plugin.settings.pat)
-          .onChange(async (v) => {
-            this.plugin.settings.pat = v.trim();
-            await this.plugin.saveSettings();
-            this.plugin.connectNotify();
-          });
-      });
-
-    new Setting(containerEl)
-      .setName(t("settings.connect.name"))
-      .setDesc(t("settings.connect.desc"))
-      .addButton((b) =>
-        b.setButtonText(t("settings.connect.button")).onClick(async () => {
-          try {
-            this.workspaces = await fetchWorkspaces(this.plugin.settings.serverUrl, this.plugin.settings.pat);
-            if (this.workspaces.length === 0) {
-              new Notice(t("notice.noWorkspaces"));
-            } else {
-              new Notice(
-                t("notice.foundWorkspaces", {
-                  count: this.workspaces.length,
-                  noun: plural("noun.workspace", this.workspaces.length),
-                }),
-              );
-            }
-            this.display();
-          } catch (e) {
-            new Notice(t("notice.error", { msg: (e as Error).message }));
-          }
-        }),
-      );
-
-    if (this.workspaces.length > 0 || this.plugin.settings.workspaceHandle) {
-      const locked = this.plugin.settings.locked;
-      new Setting(containerEl)
-        .setName(t("settings.workspace.name"))
-        .setDesc(locked ? t("settings.workspace.descLocked") : t("settings.workspace.descUnlocked"))
-        .addDropdown((d) => {
-          const opts = this.workspaces.length > 0
-            ? this.workspaces
-            : [{ id: this.plugin.settings.workspaceId, handle: this.plugin.settings.workspaceHandle, name: this.plugin.settings.workspaceHandle }];
-          for (const w of opts) d.addOption(w.handle, `${w.name} (@${w.handle})`);
-          d.setValue(this.plugin.settings.workspaceHandle);
-          d.setDisabled(locked);
-          d.onChange(async (handle) => {
-            const w = this.workspaces.find((x) => x.handle === handle);
-            if (w) {
-
-              this.plugin.flushPendingDeletes();
-              this.plugin.settings.workspaceHandle = w.handle;
-              this.plugin.settings.workspaceId = w.id;
-              this.plugin.resetPendingDeletes();
-              await this.plugin.saveSettings();
-
-            }
-          });
-        });
-
-      new Setting(containerEl)
-        .setName(locked ? t("settings.lock.nameLocked") : t("settings.lock.nameUnlocked"))
-        .setDesc(locked ? t("settings.lock.descLocked") : t("settings.lock.descUnlocked"))
-        .addButton((b) => {
-          if (locked) {
-            b.setButtonText(t("settings.lock.unlock"))
-              .setWarning()
-              .onClick(async () => {
-                this.plugin.settings.locked = false;
-                await this.plugin.saveSettings();
-                this.plugin.disconnectNotify();
-
-                this.plugin.clearUpgradeNotice();
-                this.plugin.scheduleInterval();
-
-                this.plugin.applyExplorerMirror();
-                new Notice(t("notice.unlocked"));
-                this.display();
-              });
-          } else {
-            b.setButtonText(t("settings.lock.lockAndSync"))
-              .setCta()
-              .onClick(() => {
-                if (!this.plugin.settings.workspaceId) {
-                  new Notice(t("notice.pickWorkspace"));
-                  return;
-                }
-                const handle = this.plugin.settings.workspaceHandle;
-                new ConfirmModal(this.app, {
-                  title: t("modal.lock.title"),
-                  body: [t("modal.lock.body1", { handle }), t("modal.lock.body2"), t("modal.lock.body3")],
-                  confirmText: t("modal.lock.confirm"),
-                  warning: true,
-                  onConfirm: async () => {
-                    this.plugin.settings.locked = true;
-
-                    this.plugin.settings.needsBootstrap = true;
-                    await this.plugin.saveSettings();
-                    this.plugin.connectNotify();
-                    this.plugin.scheduleInterval();
-
-                    this.plugin.applyExplorerMirror();
-                    void this.plugin.runSync(true);
-                    new Notice(t("notice.locked"));
-                    this.display();
-                  },
-                }).open();
-              });
-          }
-        });
-    }
-
-    new Setting(containerEl)
-      .setName(t("settings.interval.name"))
-      .setDesc(t("settings.interval.desc"))
-      .addText((text) =>
-        text
-          .setValue(String(this.plugin.settings.syncIntervalSecs))
-          .onChange(async (v) => {
-            const n = Number.parseInt(v, 10);
-            this.plugin.settings.syncIntervalSecs = Number.isFinite(n) && n >= 0 ? n : 0;
-            await this.plugin.saveSettings();
-            this.plugin.scheduleInterval();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName(t("settings.maxAttachment.name"))
-      .setDesc(t("settings.maxAttachment.desc"))
-      .addText((text) =>
-        text
-          .setValue(String(this.plugin.settings.maxAttachmentMiB))
-          .onChange(async (v) => {
-            const n = Number.parseInt(v, 10);
-            this.plugin.settings.maxAttachmentMiB = Number.isFinite(n) && n > 0 ? n : 15;
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName(t("settings.folders.name"))
-      .setDesc(t("settings.folders.desc"))
-      .addTextArea((text) => {
-        text
-          .setPlaceholder("Work\nProjects/2026")
-          .setValue(this.plugin.settings.syncFolders.join("\n"))
-          .onChange(async (v) => {
-            const next = v
-              .split("\n")
-              .map((line) => line.trim().replace(/^\/+|\/+$/g, ""))
-              .filter((line) => line.length > 0);
-            const changed = next.join("\n") !== this.plugin.settings.syncFolders.join("\n");
-            this.plugin.settings.syncFolders = next;
-
-            if (next.length > 0 && this.plugin.settings.mirrorCustomOrder) {
-              this.plugin.settings.mirrorCustomOrder = false;
-              new Notice(t("notice.mirrorDisabledPartial"));
-              this.plugin.applyExplorerMirror();
-              this.refreshIfOpen();
-            }
-            await this.plugin.saveSettings();
-
-            if (changed) this.plugin.onScopeChanged();
-          });
-        text.inputEl.rows = 3;
-      });
-
-    const partial = this.plugin.settings.syncFolders.length > 0;
-    new Setting(containerEl)
-      .setName(t("settings.mirror.name"))
-      .setDesc(partial ? t("settings.mirror.descPartial") : t("settings.mirror.desc"))
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.mirrorCustomOrder && !partial)
-          .setDisabled(partial)
-          .onChange(async (v) => {
-            this.plugin.settings.mirrorCustomOrder = v;
-            await this.plugin.saveSettings();
-            this.plugin.applyExplorerMirror();
-          }),
-      );
-
-    const locked = this.plugin.settings.locked;
-    new Setting(containerEl)
-      .setName(t("settings.syncNow.name"))
-      .setDesc(
-        !locked
-          ? t("settings.syncNow.descUnlocked")
-          : this.plugin.settings.lastSyncAt
-            ? t("settings.syncNow.descLast", { time: new Date(this.plugin.settings.lastSyncAt).toLocaleString() })
-            : t("settings.syncNow.descNever"),
-      )
-      .addButton((b) =>
-        b
-          .setButtonText(t("settings.syncNow.button"))
-          .setCta()
-          .setDisabled(!locked)
-          .onClick(() => void this.plugin.runSync(true)),
-      );
-
-    this.renderConflicts(containerEl);
-    this.renderSupersededMoves(containerEl);
   }
 
   private renderConflicts(containerEl: HTMLElement): void {
@@ -295,6 +277,7 @@ export class DocliSettingTab extends PluginSettingTab {
       .filter((f) => /\(conflict( \d+)?\)/.test(f.name))
       .sort((a, b) => a.path.localeCompare(b.path));
 
+    if (!conflicts.length) return;
     new Setting(containerEl)
       .setName(conflicts.length ? t("settings.conflicts.titleCount", { count: conflicts.length }) : t("settings.conflicts.title"))
       .setHeading();
@@ -319,6 +302,7 @@ export class DocliSettingTab extends PluginSettingTab {
 
   private renderSupersededMoves(containerEl: HTMLElement): void {
     const moves = this.plugin.settings.supersededMoves;
+    if (!moves.length) return;
     new Setting(containerEl)
       .setName(moves.length ? t("settings.moves.titleCount", { count: moves.length }) : t("settings.moves.title"))
       .setHeading();
@@ -343,7 +327,7 @@ export class DocliSettingTab extends PluginSettingTab {
       b.setButtonText(t("settings.moves.clear")).onClick(async () => {
         this.plugin.settings.supersededMoves = [];
         await this.plugin.saveSettings();
-        this.display();
+        this.refreshIfOpen();
       }),
     );
   }

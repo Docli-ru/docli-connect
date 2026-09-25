@@ -339,9 +339,7 @@ export class ExplorerReorderGesture {
   private paintIndicator(rowEl: HTMLElement, edge: "before" | "after"): void {
     if (!this.indicator) {
 
-      this.indicator = this.containerEl.ownerDocument.createElement("div");
-      this.indicator.className = "docli-order-indicator";
-      this.containerEl.appendChild(this.indicator);
+      this.indicator = this.containerEl.createEl("div", { cls: "docli-order-indicator" });
     }
     const c = this.containerEl.getBoundingClientRect();
     const r = rowEl.getBoundingClientRect();

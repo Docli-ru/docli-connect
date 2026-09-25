@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { Notice, Platform, Plugin } from "obsidian";
+import { Notice, Platform, Plugin, requestUrl } from "obsidian";
 import {
   emptyState,
   folderScope,
@@ -21,6 +21,7 @@ import {
 import { ExplorerOrderPatch, type OrderEntry, type ReorderRequest } from "./explorerOrder.js";
 import {
   DEFAULT_SETTINGS,
+  loadSettings,
   MAX_SUPERSEDED_MOVES,
   mirrorOrderAvailable,
   normalizeServerUrl,
@@ -43,6 +44,8 @@ import { AlertModal, ConfirmModal } from "./confirmModal.js";
 import { plural, t } from "./i18n.js";
 import { WebSocketNotifyPort } from "./wsNotify.js";
 import { RequestUrlBlobPort, type AttachmentDeps } from "./attachments.js";
+import { AuthProvider, validateOrigin, type Credential } from "./auth.js";
+import { fetchWorkspaces, type WorkspaceRef } from "./workspaces.js";
 import { decodeWinPath } from "./winPath.js";
 
 function platformName(): string {
@@ -57,7 +60,19 @@ export default class DocliPlugin extends Plugin {
   settings: DocliSettings = { ...DEFAULT_SETTINGS };
 
   private kv: KvStore | null = null;
+  auth: AuthProvider | null = null;
+  private pendingAuth: { auth: AuthProvider; ref: string } | null = null;
+  changingConnection = false;
+  private unloaded = false;
+  connectionGeneration = 0;
+  private connectionQueue: Promise<void> = Promise.resolve();
+  private cycleDone: Promise<void> = Promise.resolve();
+  private finishCycle: (() => void) | null = null;
+
   private statusEl: HTMLElement | null = null;
+  private nextConnectionReminderAt = Date.now() + 10 * 60_000;
+  private connectionReminderKind: "setup" | "reauth" | null = null;
+  private connectionReminderNotice: Notice | null = null;
 
   private settingTab: DocliSettingTab | null = null;
 
@@ -117,13 +132,34 @@ export default class DocliPlugin extends Plugin {
       this.settingTab = new DocliSettingTab(this.app, this);
       this.addSettingTab(this.settingTab);
       this.addCommand({ id: "sync-now", name: t("cmd.syncNow"), callback: () => void this.runSync(true) });
+      this.addCommand({ id: "open-sync-settings", name: t("cmd.openSettings"), callback: () => this.openSyncSettings() });
       this.statusEl = this.addStatusBarItem();
+      if (this.statusEl) {
+        this.statusEl.addClass("mod-clickable");
+        this.statusEl.setAttribute("role", "button");
+        this.statusEl.tabIndex = 0;
+        this.registerDomEvent(this.statusEl, "click", () => this.openSyncSettings());
+        this.registerDomEvent(this.statusEl, "keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); this.openSyncSettings(); }
+        });
+      }
     } catch (e) {
       console.error("docli: UI registration failed", e);
     }
 
     try {
       await this.loadSettings();
+      try {
+        await this.loadAuth();
+      } catch (e) {
+
+        this.auth = null;
+        console.error("docli: authentication initialization failed", e);
+        new Notice(t("auth.failed"));
+      }
+      this.registerObsidianProtocolHandler("docli-connect/oauth", (params) => {
+        void this.completeSignIn(params).catch(() => new Notice(t("auth.failed")));
+      });
 
       if (!this.settings.clientId) {
         this.settings.clientId = crypto.randomUUID();
@@ -185,6 +221,12 @@ export default class DocliPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.connectionReminderNotice?.hide();
+    this.connectionReminderNotice = null;
+    this.unloaded = true;
+    this.connectionGeneration++;
+    this.auth?.cancel();
+    this.cancelSignIn();
     if (this.debounce !== null) window.clearTimeout(this.debounce);
     if (this.ticker !== null) window.clearInterval(this.ticker);
     this.disconnectNotify();
@@ -200,7 +242,7 @@ export default class DocliPlugin extends Plugin {
     if (Platform.isMobile && !normalizeServerUrl(this.settings.serverUrl).startsWith("https://")) {
       return;
     }
-    const port = new WebSocketNotifyPort(this.settings.serverUrl, this.settings.pat);
+    const port = new WebSocketNotifyPort(this.settings.serverUrl, this.credential());
     this.notifyDisposer = port.connect(this.settings.workspaceId, {
       onPoke: () => this.onPoke(),
       onConnect: () => this.onPoke(),
@@ -228,7 +270,185 @@ export default class DocliPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = { ...DEFAULT_SETTINGS, ...((await this.loadData()) as Partial<DocliSettings>) };
+    this.settings = loadSettings((await this.loadData()) as Partial<DocliSettings> | null);
+  }
+
+  authenticated(): boolean {
+    let origin: string;
+    try { origin = validateOrigin(this.settings.serverUrl, Platform.isMobile); } catch { return false; }
+    return this.settings.authMode === "pat" ? Boolean(this.settings.pat) : Boolean(this.auth?.ready && this.auth.origin === origin);
+  }
+
+  credential(): Credential {
+    const origin = validateOrigin(this.settings.serverUrl, Platform.isMobile);
+    if (this.settings.authMode === "pat") return this.settings.pat;
+    if (!this.auth || this.auth.origin !== origin) throw new Error(t("auth.failed"));
+    return this.auth;
+  }
+
+  private async loadAuth(): Promise<void> {
+    this.auth = null;
+    this.auth = await this.createAuth(this.settings.oauthSecretRef);
+    await this.auth.load();
+  }
+
+  private async createAuth(secretRef: string): Promise<AuthProvider> {
+    const origin = validateOrigin(this.settings.serverUrl, Platform.isMobile);
+    let install = this.app.loadLocalStorage("docli-oauth-install") as string | null;
+    if (!install) {
+      install = crypto.randomUUID();
+      this.app.saveLocalStorage("docli-oauth-install", install);
+    }
+    const ref = secretRef || `docli-oauth-${install}`;
+    const kv = new IndexedDbKv();
+    const auth = new AuthProvider(origin, install, {
+      getSecret: () => this.app.secretStorage.getSecret(ref),
+      setSecret: (value) => this.app.secretStorage.setSecret(ref, value),
+      getCheckpoint: () => kv.get(`oauth:${install}:${ref}`),
+      setCheckpoint: (value) => kv.set(`oauth:${install}:${ref}`, value),
+    }, async (path, fields) => {
+      const response = await requestUrl({ url: origin + path, method: "POST",
+        contentType: "application/x-www-form-urlencoded", body: new URLSearchParams(fields).toString(), throw: false });
+      let json: unknown = null;
+      try { json = response.json; } catch {  /* noop */  }
+      return { status: response.status, json };
+    });
+    return auth;
+  }
+
+  changeConnection(change: () => Promise<void>, cancel = true): Promise<void> {
+    this.changingConnection = true;
+    this.connectionGeneration++;
+    if (cancel) this.cancelSignIn();
+    this.disconnectNotify();
+    if (this.debounce !== null) window.clearTimeout(this.debounce);
+    const task = this.connectionQueue.then(async () => {
+      await this.cycleDone;
+      await this.persistConnectionOutboxes();
+      if (this.unloaded) return;
+      await change();
+      await this.saveSettings();
+    });
+    this.connectionQueue = task.catch(() => {});
+    const tail = this.connectionQueue;
+    return task.finally(() => {
+
+      if (this.connectionQueue !== tail) return;
+      this.changingConnection = false;
+      this.applyExplorerMirror();
+      this.connectNotify();
+      this.scheduleInterval();
+      this.settingTab?.refreshIfOpen();
+    });
+  }
+
+  private async persistConnectionOutboxes(): Promise<void> {
+    const deletes = this.pendingDeletesStore();
+    const reorders = this.pendingReordersStore();
+    await deletes?.flush();
+    await reorders?.flush();
+    for (;;) {
+      const snapshot = JSON.stringify([this.pendingDeletes, this.lastDrained, this.pendingReorders]);
+      if (deletes) await deletes.save([...await deletes.load(), ...this.pendingDeletes, ...this.lastDrained], true);
+      if (reorders) await reorders.save(this.pendingReorders.length ? this.pendingReorders : await reorders.load(), true);
+      if (snapshot === JSON.stringify([this.pendingDeletes, this.lastDrained, this.pendingReorders])) return;
+    }
+  }
+
+  private clearSelection(): void {
+    this.nextConnectionReminderAt = Date.now() + 10 * 60_000;
+    this.settings.locked = false;
+    this.settings.workspaceId = "";
+    this.settings.workspaceHandle = "";
+    this.resetPendingDeletes();
+    this.pendingReorders = [];
+    this.pendingHints = [];
+    this.orderEntries.clear();
+    this.orderOverrides.clear();
+  }
+
+  async changeServer(value: string): Promise<void> {
+    const origin = validateOrigin(value, Platform.isMobile);
+    if (origin === this.settings.serverUrl) return;
+    await this.changeConnection(async () => {
+      this.settings.serverUrl = origin;
+      this.settings.pat = "";
+      this.clearSelection();
+      await this.loadAuth();
+    });
+  }
+
+  async useToken(token: string): Promise<void> {
+    await this.changeConnection(async () => {
+      this.settings.authMode = "pat";
+      this.settings.pat = token.trim();
+      this.clearSelection();
+    });
+  }
+
+  get signInPending(): boolean { return this.pendingAuth !== null; }
+
+  async beginSignIn(): Promise<void> {
+    this.cancelSignIn();
+    const generation = this.connectionGeneration;
+    const ref = `docli-oauth-${crypto.randomUUID()}`;
+    const auth = await this.createAuth(ref);
+    if (generation !== this.connectionGeneration || this.unloaded) return;
+    this.pendingAuth = { auth, ref };
+    this.settingTab?.refreshIfOpen();
+    try {
+      const url = await auth.begin();
+      if (this.pendingAuth?.auth === auth && !this.unloaded) window.open(url);
+    } catch (error) {
+      if (this.pendingAuth?.auth === auth) this.cancelSignIn();
+      this.settingTab?.refreshIfOpen();
+      throw error;
+    }
+  }
+
+  cancelSignIn(): void {
+    this.pendingAuth?.auth.cancel();
+    this.pendingAuth = null;
+  }
+
+  private async completeSignIn(params: Record<string, string>): Promise<void> {
+    const pending = this.pendingAuth;
+    if (!pending) return;
+    try {
+      await this.changeConnection(async () => {
+      await pending.auth.complete(params);
+      await this.persistConnectionOutboxes();
+      if (this.unloaded || this.pendingAuth !== pending) return;
+      this.auth = pending.auth;
+      this.settings.oauthSecretRef = pending.ref;
+      this.pendingAuth = null;
+      this.settings.authMode = "oauth";
+      this.settings.pat = "";
+      this.clearSelection();
+      new Notice(t("auth.selectWorkspace"));
+      }, false);
+    } finally {
+      if (this.pendingAuth === pending && !pending.auth.hasPending) this.cancelSignIn();
+      this.settingTab?.refreshIfOpen();
+    }
+  }
+
+  async discoverWorkspaces(): Promise<WorkspaceRef[]> {
+    const generation = this.connectionGeneration;
+    const result = await fetchWorkspaces(this.settings.serverUrl, this.credential());
+    if (generation !== this.connectionGeneration || this.unloaded) return [];
+    return result;
+  }
+
+  async signOut(): Promise<void> {
+    await this.changeConnection(async () => {
+      let revoked = true;
+      if (this.settings.authMode === "oauth") revoked = await this.auth?.signOut() ?? true;
+      await this.persistConnectionOutboxes();
+      this.settings.pat = "";
+      this.clearSelection();
+      if (!revoked) new Notice(t("auth.offlineRevoke"));
+    });
   }
 
   async saveSettings(): Promise<void> {
@@ -248,13 +468,96 @@ export default class DocliPlugin extends Plugin {
   }
 
   private tick(): void {
+    this.maybeRemindConnection();
 
     if (!this.syncing && this.nextSyncAt !== null && Date.now() >= this.nextSyncAt && this.canSync()) {
       void this.runSync(false);
     }
   }
 
+  maybeRemindConnection(now = Date.now(), foreground = !activeDocument.hidden && activeDocument.hasFocus()): void {
+    const kind = this.updateConnectionReminderKind(now);
+    if (!kind || !this.settings.setupReminders || this.unloaded || this.changingConnection || this.signInPending ||
+        !foreground || this.settingTab?.isVisible || now < this.nextConnectionReminderAt) return;
+    this.nextConnectionReminderAt = now + 10 * 60_000;
+    this.showConnectionReminder(kind);
+  }
+
+  async setConnectionReminders(enabled: boolean): Promise<void> {
+    const previous = this.settings.setupReminders;
+    this.settings.setupReminders = enabled;
+    try { await this.saveSettings(); }
+    catch (error) { this.settings.setupReminders = previous; throw error; }
+    this.nextConnectionReminderAt = Date.now() + 10 * 60_000;
+    if (!enabled) { this.connectionReminderNotice?.hide(); this.connectionReminderNotice = null; }
+  }
+
+  private showConnectionReminder(kind: "setup" | "reauth"): void {
+    this.connectionReminderNotice?.hide();
+    const content = createFragment();
+    content.createEl("strong", { text: t(kind === "setup" ? "setupReminder.title" : "reauthReminder.title") });
+    content.createEl("p", { text: t(kind === "setup" ? "setupReminder.body" : "reauthReminder.body") });
+    const actions = content.createDiv({ cls: "docli-setup-reminder-actions" });
+    actions.createEl("button", { text: t(kind === "setup" ? "setupReminder.choose" : "reauthReminder.signIn") }).addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.connectionReminderNotice?.hide(); this.connectionReminderNotice = null;
+      this.openSyncSettings();
+    });
+    actions.createEl("button", { text: t("setupReminder.stop") }).addEventListener("click", (event) => {
+      event.stopPropagation();
+      void this.setConnectionReminders(false).catch(() => new Notice(t("ux.actionFailed")));
+    });
+    this.connectionReminderNotice = new Notice(content, 15_000);
+  }
+
+  get needsSetup(): boolean {
+    return this.authenticated() && !this.settings.workspaceId;
+  }
+
+  get needsReauth(): boolean {
+    return this.settings.authMode === "oauth" && Boolean(this.settings.oauthSecretRef) &&
+      Boolean(this.settings.workspaceId) && this.settings.locked && !this.authenticated();
+  }
+
+  private updateConnectionReminderKind(now: number): "setup" | "reauth" | null {
+    const kind = this.needsSetup ? "setup" : this.needsReauth ? "reauth" : null;
+    if (kind !== this.connectionReminderKind) {
+      this.connectionReminderKind = kind;
+      this.nextConnectionReminderAt = now + 10 * 60_000;
+      this.connectionReminderNotice?.hide();
+      this.connectionReminderNotice = null;
+    }
+    return kind;
+  }
+
+  get syncMode(): "auth" | "paused" | "update" | "syncing" | "error" | "attention" | "live" | "polling" | "disconnected" {
+    if (this.unloaded || this.changingConnection || !this.settings.locked) return "paused";
+    if (!this.authenticated()) return "auth";
+    if (!this.isConfigured()) return "paused";
+    if (this.upgradeRequired) return "update";
+    if (this.syncing) return "syncing";
+    if (this.lastError) return "error";
+    if (this.quarantinedPaths.length) return "attention";
+    if (this.notifyStatus === "connected") return "live";
+    return this.settings.syncIntervalSecs > 0 ? "polling" : "disconnected";
+  }
+
+  openSyncSettings(): void {
+
+    const settings = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+    if (!settings) { new Notice(t("status.setupHelp")); return; }
+    settings.open();
+    settings.openTabById(this.manifest.id);
+    this.settingTab?.refreshIfOpen();
+  }
+
   private renderStatus(): void {
+    this.settingTab?.refreshSyncStatus();
+    const reminderKind = this.updateConnectionReminderKind(Date.now());
+    if (!reminderKind || !this.settings.setupReminders) {
+      this.connectionReminderNotice?.hide(); this.connectionReminderNotice = null;
+    }
+    if (this.needsSetup) return this.paintStatus("yellow", t("status.setupHelp"));
     const last = this.settings.lastSyncAt
       ? t("status.last.synced", { time: new Date(this.settings.lastSyncAt).toLocaleTimeString() })
       : t("status.last.never");
@@ -304,7 +607,7 @@ export default class DocliPlugin extends Plugin {
     if (!el) return;
     const emoji =
       light === "green" ? "🟢" : light === "yellow" ? "🟡" : light === "red" ? "🔴" : "⏸️";
-    el.setText(`d: ${emoji}`);
+    el.setText(this.needsSetup ? t("status.finishSetup") : this.needsReauth ? t("status.signInAgain") : `d: ${emoji}`);
     el.setAttribute("aria-label", tooltip);
   }
 
@@ -360,7 +663,7 @@ export default class DocliPlugin extends Plugin {
   }
 
   private mirrorEnabled(): boolean {
-    return mirrorOrderAvailable(this.settings);
+    return mirrorOrderAvailable(this.settings, this.authenticated() && !this.changingConnection && !this.unloaded);
   }
 
   applyExplorerMirror(): void {
@@ -439,7 +742,7 @@ export default class DocliPlugin extends Plugin {
 
   isConfigured(): boolean {
     return Boolean(
-      this.settings.serverUrl && this.settings.pat && this.settings.workspaceId && this.settings.clientId,
+      !this.unloaded && !this.changingConnection && this.authenticated() && this.settings.workspaceId && this.settings.clientId,
     );
   }
 
@@ -477,13 +780,11 @@ export default class DocliPlugin extends Plugin {
     void this.pendingDeletesStore()?.save([...this.pendingDeletes, ...this.lastDrained]);
   }
 
-  flushPendingDeletes(): void {
-    this.persistTombstones();
-  }
-
   resetPendingDeletes(): void {
     this.pendingDeletes = [];
     this.lastDrained = [];
+    this.pendingReorders = [];
+    this.pendingHints = [];
   }
 
   private statePort(): StatePort {
@@ -525,13 +826,16 @@ export default class DocliPlugin extends Plugin {
 
       foldPath: (p) => {
         const n = p.normalize("NFC");
-        return Platform.isMacOS || Platform.isWin || Platform.isIosApp ? n.toLowerCase() : n;
+
+        return Platform.isMacOS || Platform.isWin || Platform.isIosApp
+          ? n.toLowerCase().replace(/ς/g, "σ")
+          : n;
       },
 
       transport: withRetry(
         new RequestUrlTransport(
           this.settings.serverUrl,
-          this.settings.pat,
+          this.credential(),
           (info) => this.onVersionMismatch(info),
           this.manifest.version,
           platformName(),
@@ -601,6 +905,7 @@ export default class DocliPlugin extends Plugin {
     }
     if (this.syncing) return;
     this.syncing = true;
+    this.cycleDone = new Promise((resolve) => { this.finishCycle = resolve; });
     this.versionBlocked = false;
     const hints = this.pendingHints;
     this.pendingHints = [];
@@ -712,6 +1017,8 @@ export default class DocliPlugin extends Plugin {
       if (manual) new Notice(t("notice.syncFailed", { msg: String((e as Error).message ?? e) }));
     } finally {
       this.syncing = false;
+      this.finishCycle?.();
+      this.finishCycle = null;
       this.scheduleInterval();
 
       if (this.pokePending || this.dirty) {
@@ -726,7 +1033,7 @@ export default class DocliPlugin extends Plugin {
     const deps: AttachmentDeps = {
       app: this.app,
       serverUrl: this.settings.serverUrl,
-      pat: this.settings.pat,
+      pat: this.credential(),
       workspaceId: this.settings.workspaceId,
       maxBytes: Math.max(1, this.settings.maxAttachmentMiB) * 1024 * 1024,
     };

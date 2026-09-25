@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 OOO Agitek
 // SPDX-License-Identifier: MIT
 
-import { requestUrl } from "obsidian";
+import { authRequest } from "./authRequest.js";
+import type { Credential } from "./auth.js";
 import type { HttpTransport } from "./sync-client/index.js";
 import { normalizeServerUrl } from "./settings.js";
 
@@ -16,7 +17,7 @@ export interface VersionMismatchInfo {
 export class RequestUrlTransport implements HttpTransport {
   constructor(
     private readonly serverUrl: string,
-    private readonly pat: string,
+    private readonly pat: Credential,
 
     private readonly onVersionMismatch?: (info: VersionMismatchInfo) => void,
 
@@ -28,12 +29,11 @@ export class RequestUrlTransport implements HttpTransport {
   async post(path: string, body: unknown): Promise<{ status: number; json: unknown }> {
     const url = normalizeServerUrl(this.serverUrl) + path;
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${this.pat}`,
       "X-Docli-Sync-Version": SYNC_VERSION,
     };
     if (this.pluginVersion) headers["X-Docli-Plugin-Version"] = this.pluginVersion;
     if (this.platform) headers["X-Docli-Client-Platform"] = this.platform;
-    const resp = await requestUrl({
+    const resp = await authRequest(this.pat, {
       url,
       method: "POST",
       contentType: "application/json",

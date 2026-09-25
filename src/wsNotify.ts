@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { type NotifyHandlers, type NotifyPort } from "./sync-client/index.js";
+import { AuthError, credentialToken, type Credential } from "./auth.js";
 import { normalizeServerUrl } from "./settings.js";
 
 export function pokeUrl(serverUrl: string): string {
@@ -14,7 +15,7 @@ const MAX_BACKOFF_MS = 30_000;
 export class WebSocketNotifyPort implements NotifyPort {
   constructor(
     private readonly serverUrl: string,
-    private readonly pat: string,
+    private readonly pat: Credential,
   ) {}
 
   connect(workspaceId: string, handlers: NotifyHandlers): () => void {
@@ -22,6 +23,7 @@ export class WebSocketNotifyPort implements NotifyPort {
     let ws: WebSocket | null = null;
     let backoff = INITIAL_BACKOFF_MS;
     let reconnectTimer: number | null = null;
+    let authRetried = false;
 
     const scheduleReconnect = () => {
       if (closed || reconnectTimer !== null) return;
@@ -46,7 +48,15 @@ export class WebSocketNotifyPort implements NotifyPort {
       sock.onopen = () => {
 
         try {
-          sock.send(JSON.stringify({ token: this.pat, workspaceId }));
+          if (typeof this.pat === "string") sock.send(JSON.stringify({ token: this.pat, workspaceId }));
+          else void credentialToken(this.pat).then((token) => {
+            if (!closed && ws === sock) sock.send(JSON.stringify({ token, workspaceId }));
+          }).catch((error: unknown) => {
+            if (closed || ws !== sock) return;
+            closed = !(error instanceof AuthError && error.retryable);
+            sock.close();
+            handlers.onStatus?.("disconnected");
+          });
         } catch {
           sock.close();
         }
@@ -61,6 +71,7 @@ export class WebSocketNotifyPort implements NotifyPort {
         if (msg.type === "connected") {
 
           backoff = INITIAL_BACKOFF_MS;
+          authRetried = false;
           handlers.onStatus?.("connected");
           handlers.onConnect?.();
           return;
@@ -76,9 +87,23 @@ export class WebSocketNotifyPort implements NotifyPort {
            /* noop */
         }
       };
-      sock.onclose = () => {
+      sock.onclose = (event) => {
         if (ws === sock) ws = null;
         handlers.onStatus?.("disconnected");
+        if (event?.code === 4403 || (event?.code === 4401 && (typeof this.pat === "string" || authRetried))) {
+          closed = true;
+          return;
+        }
+        if (event?.code === 4401 && typeof this.pat !== "string") {
+          authRetried = true;
+          void this.pat.token(true).then(() => scheduleReconnect()).catch((error: unknown) => {
+            if (closed) return;
+            if (error instanceof AuthError && error.retryable) { authRetried = false; scheduleReconnect(); }
+            else closed = true;
+            handlers.onStatus?.("disconnected");
+          });
+          return;
+        }
         scheduleReconnect();
       };
     };
